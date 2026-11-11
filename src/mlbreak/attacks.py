@@ -119,6 +119,11 @@ def gradient_attack(model, X0: np.ndarray, y: np.ndarray, cfg: AttackConfig,
     For PGD the iterate with the lowest margin is returned (best-iterate PGD).
     """
     X0 = np.asarray(X0, dtype=float)
+    if len(X0) == 0:
+        # Zero attack-eligible samples (e.g. the system abstains on every clean input):
+        # nothing to perturb. Avoids np.stack([]) on the random start.
+        return AttackOutput(X0.copy(), np.zeros(0, dtype=bool), np.zeros(0, dtype=np.int64),
+                            max(cfg.confidence, min_confidence))
     s = np.where(y == 1, 1.0, -1.0)
     kappa = max(cfg.confidence, min_confidence)
     eps, norm, alpha = cfg.epsilon, cfg.norm, cfg.effective_step_size
@@ -171,6 +176,7 @@ def random_search_attack(oracle: Callable[[np.ndarray], np.ndarray], X0: np.ndar
     original input is returned and the attempt counts as a failure.
     """
     X0 = np.asarray(X0, dtype=float)
+    _check_deadline(deadline)
     x_adv = X0.copy()
     reached = np.zeros(len(X0), dtype=bool)
     queries = np.zeros(len(X0), dtype=np.int64)

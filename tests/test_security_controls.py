@@ -10,7 +10,7 @@ FORBIDDEN_IMPORTS = {"pickle", "joblib", "dill", "cloudpickle", "socket", "reque
                      "http.client", "httpx", "subprocess", "ftplib", "smtplib"}
 # uvicorn/fastapi are only used to *serve* the UI; experiment code must not touch the network.
 EXPERIMENT_MODULES = ["attacks", "data", "defenses", "experiments", "models", "evidence", "regression",
-                      "schemas", "hashing", "owasp"]
+                      "schemas", "hashing", "owasp", "metrics", "integrity"]
 
 
 def _imports(path: Path) -> set[str]:

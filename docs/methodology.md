@@ -46,18 +46,90 @@ against central finite differences and check the forward pass against `predict_p
   copies.
 * **Confidence rejection**: abstain if `max(p, 1−p) < τ`.
 
-## Metrics (all with explicit numerator/denominator)
+## Metrics
 
-* `clean_accuracy`: correct decisions / all test samples. Abstentions count as not correct.
-* `coverage`, `selective_accuracy`: for rejection systems.
-* `attack_success_rate`: (attacked samples with a correct clean decision whose adversarial decision
-  is a *different class, not abstain*) / (attacked samples with a correct clean decision). For replay,
-  the denominator is restricted to samples the parent actually perturbed **and** the defended system
-  decides correctly on the clean input.
-* `adversarial_accuracy`: selected samples still decided correctly after the attack / selected samples.
-* `perturbation`: L∞ and L2 statistics over attacked and over successful samples, plus the largest
-  observed ‖δ‖/ε, which is verified to be ≤ 1.
-* `queries`: label queries (black-box) or model evaluations (white-box).
+All metrics are computed in [`src/mlbreak/metrics.py`](../src/mlbreak/metrics.py) from the per-sample
+evidence. Each ratio is stored with its `numerator`, `denominator`, `population` and `definition`. An empty
+denominator gives `value: null` (undefined), never 0.
+
+### Outcome partition (schema v2)
+
+Every **selected** sample of an attack, adaptive attack or replay gets exactly one `outcome`. The counts
+are stored in `metrics.outcomes` and always sum to `n_selected`.
+
+| Outcome | Clean decision | Adversarial decision | Meaning |
+|---|---|---|---|
+| `evaded` | correct | other class (not abstain) | attack success |
+| `abstained_adversarial` | correct | **abstain** | blocked by abstaining, **not** a correct prediction |
+| `robust` | correct | true class | attack resisted |
+| `clean_misclassified` | wrong class | — (not attacked) | |
+| `clean_abstained` | abstain | — (not attacked) | |
+| `not_perturbed` | correct | — (replay only: parent did not perturb it) | decision under evaluation = clean decision |
+
+*Attack-eligible* = `evaded + abstained_adversarial + robust`: samples decided correctly on the clean
+input for which an adversarial input was evaluated. For a replay, eligibility needs **both** a
+perturbation from the parent **and** a correct clean decision by the defended system.
+
+### Definitions
+
+| Metric | Numerator | Denominator (population) |
+|---|---|---|
+| `clean_accuracy` | correct clean decisions | **all test-split samples** (abstentions are not correct) |
+| `abstention_rate_clean` | clean inputs abstained on | all test-split samples |
+| `coverage`* | non-abstained clean decisions | all test-split samples |
+| `selective_accuracy`* | correct clean decisions | non-abstained clean decisions |
+| `clean_accuracy_selected` | `evaded + abstained_adversarial + robust + not_perturbed` | selected samples |
+| `adversarial_accuracy` | `robust + not_perturbed` | selected samples |
+| `robust_accuracy` | `robust` | selected samples |
+| `attack_success_rate` | `evaded` | attack-eligible samples |
+| `abstention_rate_adversarial` | `abstained_adversarial` | attack-eligible samples |
+| `attack_resisted_rate` | `robust` | attack-eligible samples |
+| `abstention_rate_clean_selected` | `clean_abstained` | selected samples |
+| `adversarial_coverage`* | selected − `clean_abstained` − `abstained_adversarial` | selected samples |
+| `adversarial_selective_accuracy`* | `robust + not_perturbed` | selected samples with a non-abstained decision under the evaluation |
+| `abstained_on_adversarial`* | alias of `abstention_rate_adversarial` (kept for API compatibility) | |
+
+\* only reported for systems that can abstain (confidence rejection). For an argmax system these are
+trivially 1 (coverage) or equal to their non-selective counterparts.
+
+Invariants checked on every record (`metrics_arithmetic`): `attack_success_rate + abstention_rate_adversarial
++ attack_resisted_rate = 1` over the eligible population; `robust ≤ adversarial ≤ clean (selected)`.
+
+**Adversarial vs robust accuracy.** *Adversarial accuracy* asks "how often is the system right under this
+evaluation?". A sample with no adversarial input keeps its clean decision. *Robust accuracy* only counts
+samples that were actually tested with an adversarial input **and** stayed correct. They coincide for a
+fresh attack (every correctly classified sample is attacked) and differ in a replay when the parent left a
+sample unperturbed.
+
+**What changed in schema v2.** v1 computed `adversarial_accuracy = (clean-correct − successes) / selected`.
+Because abstentions are not successes, every adversarial abstention was counted as a correct prediction. On
+the reference rejection replay (τ = 0.8), that reported 86.7% instead of the correct 35.3%: 77 abstentions
+were counted as correct. Attack success rate and clean metrics are unchanged. For systems that cannot
+abstain, adversarial accuracy is also unchanged.
+
+### Other measurements
+
+* `perturbation`: L∞ and L2 statistics over attacked and over successful (`evaded`) samples, plus the
+  largest observed ‖δ‖/ε, which is verified to be ≤ 1.
+* `queries`: label queries (black-box) or model evaluations (white-box). Each sample uses at most
+  `query_budget` (black-box) or `1 + 2·steps` (white-box).
+* `comparison` (replay only): the undefended side is **recomputed from the parent's per-sample evidence**
+  with the same definitions as the defended side. It is never copied from the parent's stored metrics.
+
+## Lineage
+
+A `parent_experiment_id` is accepted only for **defend/replay** and **adaptive attacks**. The parent must:
+
+1. exist, have completed, and be a **non-adaptive attack against the undefended model**
+   (`mode = attack`, `evaluation = attack`). Baselines, adaptive attacks, replays and failed runs are rejected;
+2. pass the evidence integrity check (`mlbreak check`), so a tampered parent is rejected;
+3. share scenario, model, seed, dataset split hashes and base-model artifact hash with the child;
+4. for adaptive attacks, also use the same **norm and ε** and the **same selected test samples**. The
+   attack type may differ (e.g. a black-box adaptive attack), and this is recorded as `lineage.attack_differs`.
+
+The validated provenance is stored in `lineage`: relation, parent hashes (config, results, record), shared
+hashes and the list of checks passed. It is covered by the child's `record_sha256`. A non-adaptive attack
+cannot have a parent. Incompatible requests return HTTP 422 with the reason.
 
 ## Security regression
 

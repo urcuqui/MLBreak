@@ -1,4 +1,6 @@
-export interface Ratio { numerator: number; denominator: number; value: number | null; definition: string }
+export interface Ratio { numerator: number; denominator: number; value: number | null; definition: string; population?: string }
+
+export type Outcome = "evaded" | "abstained_adversarial" | "robust" | "clean_misclassified" | "clean_abstained" | "not_perturbed";
 
 export interface PerturbationStats {
   n: number; linf_mean?: number; linf_max?: number; linf_median?: number;
@@ -9,6 +11,10 @@ export interface Metrics {
   clean_accuracy?: Ratio; clean_accuracy_selected?: Ratio; coverage?: Ratio; selective_accuracy?: Ratio;
   train_accuracy?: Ratio; adversarial_accuracy?: Ratio; attack_success_rate?: Ratio;
   abstained_on_adversarial?: Ratio;
+  robust_accuracy?: Ratio; abstention_rate_adversarial?: Ratio; attack_resisted_rate?: Ratio;
+  abstention_rate_clean?: Ratio; abstention_rate_clean_selected?: Ratio;
+  adversarial_coverage?: Ratio; adversarial_selective_accuracy?: Ratio;
+  outcomes?: { population: string; n_selected: number; attack_eligible: number; counts: Record<Outcome, number>; definition: string };
   perturbation?: { norm: string; epsilon: number; max_budget_ratio: number; attacked: PerturbationStats; successful: PerturbationStats };
   queries?: { total: number; mean_per_attacked_sample: number; kind: string };
   comparison?: Record<string, { undefended: Ratio; defended: Ratio }>;
@@ -20,7 +26,7 @@ export interface SampleResult {
   p1_original: number; confidence_original: number; x_adversarial: number[] | null;
   pred_adversarial: number | null; p1_adversarial: number | null; confidence_adversarial: number | null;
   perturbation_linf: number | null; perturbation_l2: number | null; clean_correct: boolean;
-  attack_success: boolean | null; queries: number | null;
+  attack_success: boolean | null; queries: number | null; outcome?: Outcome | null;
 }
 
 export interface AttackConfig {
@@ -43,6 +49,7 @@ export interface ExperimentRecord {
   dataset: Record<string, unknown> & { dataset_id: string; split_id: string; test_sha256: string; train_sha256: string };
   seed: number; attack_config: AttackConfig | null; defense_config: Defense | null;
   parent_experiment_id: string | null; replay_of: string | null; request: Record<string, unknown>;
+  schema_version?: string; lineage?: Record<string, unknown> | null;
   metrics: Metrics; samples: SampleResult[]; reproducibility: Record<string, unknown>; duration_ms: number;
 }
 

@@ -11,15 +11,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .config import LIMITS, PROJECT_ROOT, cases_dir, data_dir
-from .data import load_dataset
-from .defenses import base_model
+from .attacks import ExperimentTimeout
 from .evidence import EvidenceStore, ExperimentNotFound
 from .experiments import SCENARIOS, EngineBusy, ExperimentEngine, InvalidExperiment
 from .models import MODELS
@@ -71,6 +69,11 @@ def create_app(root: Path | None = None, cases: Path | None = None,
     async def _busy(_: Request, exc: EngineBusy):
         return JSONResponse({"detail": str(exc)}, 429)
 
+    @app.exception_handler(ExperimentTimeout)
+    async def _timeout(_: Request, exc: ExperimentTimeout):
+        # Experiments record timeouts as failed evidence; this covers non-experiment work (boundary, dataset).
+        return JSONResponse({"detail": f"wall-clock limit of {LIMITS.max_experiment_seconds:g}s exceeded: {exc}"}, 504)
+
     # ------------------------------------------------------------ catalogue
     @app.get("/api/health")
     def health():
@@ -94,15 +97,8 @@ def create_app(root: Path | None = None, cases: Path | None = None,
         scen = SCENARIOS.get(scenario_id)
         if scen is None or model_id not in MODELS or not 0 <= seed < 2**31:
             raise HTTPException(404, "unknown scenario, model or invalid seed")
-        ds = load_dataset(scen.dataset_id, seed)
-        model = base_model(model_id, scen.dataset_id, seed)
-        p1 = model.proba(ds.X_test)
-        return {
-            "scenario": scen.__dict__, "dataset": ds.describe(), "model": model.describe(),
-            "train": {"X": ds.X_train.round(6).tolist(), "y": ds.y_train.tolist()},
-            "test": {"X": ds.X_test.round(6).tolist(), "y": ds.y_test.tolist(),
-                     "pred": model.predict(ds.X_test).tolist(), "p1": np.round(p1, 6).tolist()},
-        }
+        # Gated: an uncached seed trains a model, so it shares the experiment concurrency/time limits.
+        return engine.dataset_view(scenario_id, model_id, seed)
 
     @app.post("/api/boundary")
     def boundary(req: BoundaryRequest):
@@ -132,6 +128,11 @@ def create_app(root: Path | None = None, cases: Path | None = None,
     @app.post("/api/experiments/{experiment_id}/replay")
     def replay(experiment_id: str):
         return engine.replay(experiment_id)
+
+    @app.get("/api/experiments/{experiment_id}/verify")
+    def verify(experiment_id: str):
+        """Evidence integrity check (hashes + metrics re-derived from per-sample results). No re-execution."""
+        return engine.verify(experiment_id)
 
     @app.get("/api/experiments/{experiment_id}/evidence.json")
     def evidence_json(experiment_id: str):

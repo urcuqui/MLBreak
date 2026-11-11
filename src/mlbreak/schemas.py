@@ -173,10 +173,20 @@ class SampleResult(BaseModel):
     clean_correct: bool
     attack_success: bool | None = None
     queries: int | None = None
+    # Outcome partition (see mlbreak.metrics.OUTCOMES). None for baseline (clean-only) records and for
+    # records written before schema v2.
+    outcome: Literal["evaded", "abstained_adversarial", "robust", "clean_misclassified", "clean_abstained",
+                     "not_perturbed"] | None = None
+
+
+SCHEMA_V1 = "mlbreak.experiment/v1"
+SCHEMA_V2 = "mlbreak.experiment/v2"
+"""v2: explicit metric partition (adversarial/robust accuracy no longer count abstentions as correct),
+per-sample ``outcome``, ``lineage`` provenance and a tamper-evident ``record_sha256``. v1 records still load."""
 
 
 class ExperimentRecord(BaseModel):
-    schema_version: Literal["mlbreak.experiment/v1"] = "mlbreak.experiment/v1"
+    schema_version: Literal["mlbreak.experiment/v1", "mlbreak.experiment/v2"] = SCHEMA_V2
     experiment_id: str
     created_at: str
     mode: Mode
@@ -195,6 +205,8 @@ class ExperimentRecord(BaseModel):
     defense_config: dict[str, Any] | None
     parent_experiment_id: str | None = None
     replay_of: str | None = None
+    # Provenance of the parent link (validated compatibility + parent hashes). None for unlinked experiments.
+    lineage: dict[str, Any] | None = None
     request: dict[str, Any]
     metrics: dict[str, Any]
     samples: list[SampleResult]

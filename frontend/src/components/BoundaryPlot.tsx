@@ -72,7 +72,9 @@ export function BoundaryPlot({ boundary, dataset, selected, epsilon, norm = "lin
     if (samples) {
       const lx: (number | null)[] = [], ly: (number | null)[] = [];
       const ok = samples.filter((s) => s.x_adversarial && s.attack_success);
-      const fail = samples.filter((s) => s.x_adversarial && !s.attack_success);
+      // Abstention is neither an evasion nor a correct prediction: plotted separately.
+      const abstained = samples.filter((s) => s.x_adversarial && !s.attack_success && s.pred_adversarial === -1);
+      const fail = samples.filter((s) => s.x_adversarial && !s.attack_success && s.pred_adversarial !== -1);
       for (const s of samples) {
         if (!s.x_adversarial) continue;
         lx.push(s.x_original[0], s.x_adversarial[0], null);
@@ -89,7 +91,8 @@ export function BoundaryPlot({ boundary, dataset, selected, epsilon, norm = "lin
           "<br>conf=%{customdata[2]:.3f}<br>‖δ‖∞=%{customdata[3]:.4f}<extra>" + name + "</extra>",
       });
       traces.push(advTrace(ok, "adversarial · evaded", "x", "#d03b3b"));
-      traces.push(advTrace(fail, "adversarial · did not evade", "circle-open", "#c5d1dd"));
+      traces.push(advTrace(fail, "adversarial · still correct", "circle-open", "#c5d1dd"));
+      if (abstained.length) traces.push(advTrace(abstained, "adversarial · abstained", "diamond-open", "#e0a23a"));
     }
     if (dataset && selected != null && dataset.test.X[selected]) {
       const [sx, sy] = dataset.test.X[selected];

@@ -22,3 +22,11 @@
   and ~150 lines of attack code keep the lab transparent and fully tested, with no heavy dependency.
   ART is the right choice when the lab grows to image models or stronger attacks.
 * **Reproducibility is platform-scoped**: see [reproducibility.md](reproducibility.md).
+* **Timeouts are cooperative.** A running scikit-learn `fit` cannot be interrupted, so an experiment
+  can exceed its wall-clock limit by up to one model fit before it is marked as failed. A hard limit
+  would need process isolation, which the lab does not use (no subprocesses, no model serialisation).
+* **Integrity is tamper-evident, not tamper-proof.** `record_sha256` detects edits of stored evidence,
+  but it is not a signature. Someone who can rewrite the file can also recompute every hash. The lab is
+  local-first and has no keys to sign with.
+* **Strict lineage.** Adaptive attacks must reuse the parent's ε, norm and test samples. Comparing
+  defenses across different budgets or populations needs separate, unlinked experiments.

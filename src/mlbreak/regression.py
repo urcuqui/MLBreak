@@ -20,13 +20,15 @@ from __future__ import annotations
 
 import json
 import operator
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .experiments import ExperimentEngine
+from .config import LIMITS
+from .experiments import EngineBusy, ExperimentEngine
 from .schemas import AttackConfig, AttackRequest, DefendRequest, DefenseConfig, SampleSelection
 
 _OPS = {"<=": operator.le, ">=": operator.ge, "<": operator.lt, ">": operator.gt, "==": operator.eq}
@@ -37,7 +39,10 @@ class Invariant(BaseModel):
     id: str
     kind: Literal["security", "utility", "attack_canary"]
     posture: Literal["undefended", "defended"]
-    metric: Literal["attack_success_rate", "adversarial_accuracy", "clean_accuracy", "coverage"]
+    metric: Literal["attack_success_rate", "adversarial_accuracy", "clean_accuracy", "coverage",
+                    "robust_accuracy", "abstention_rate_adversarial", "attack_resisted_rate",
+                    "adversarial_coverage", "selective_accuracy", "adversarial_selective_accuracy",
+                    "abstention_rate_clean"]
     op: Literal["<=", ">=", "<", ">", "=="]
     value: float = Field(ge=0, le=1)
     description: str
@@ -97,9 +102,32 @@ def run_case(engine: ExperimentEngine, case: SecurityCase) -> dict[str, Any]:
     }
 
 
-def run_suite(engine: ExperimentEngine, cases_dir: Path, report_dir: Path | None = None) -> dict[str, Any]:
-    cases = load_cases(cases_dir)
-    results = [run_case(engine, c) for c in cases]
+def _not_run(case: SecurityCase, reason: str) -> dict[str, Any]:
+    """A case that could not be executed FAILS (never silently passes)."""
+    return {"id": case.id, "title": case.title, "owasp_id": case.owasp_id,
+            "defended_evaluation": case.defended_evaluation, "undefended_experiment_id": None,
+            "defended_experiment_id": None, "passed": False, "error": reason,
+            "invariants": [{**inv.model_dump(), "observed": None, "passed": False, "experiment_id": None}
+                           for inv in case.invariants]}
+
+
+def run_suite(engine: ExperimentEngine, cases_dir: Path, report_dir: Path | None = None,
+              time_limit: float = LIMITS.max_regression_seconds) -> dict[str, Any]:
+    """Run every declared case. Only one suite runs at a time (EngineBusy otherwise); once the
+    suite-level wall-clock limit is exceeded, the remaining cases are reported as failed."""
+    if not engine.suite_lock.acquire(blocking=False):
+        raise EngineBusy("a security regression suite is already running; retry when it finishes")
+    try:
+        cases = load_cases(cases_dir)
+        deadline = time.monotonic() + time_limit
+        results = []
+        for c in cases:
+            if time.monotonic() > deadline:
+                results.append(_not_run(c, f"not run: suite wall-clock limit of {time_limit:g}s exceeded"))
+            else:
+                results.append(run_case(engine, c))
+    finally:
+        engine.suite_lock.release()
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "total": len(results),

@@ -61,12 +61,16 @@ export function ExperimentDetail() {
       <div className="tiles">
         <Tile label="Clean accuracy"><RatioView r={m.clean_accuracy} emphasize /></Tile>
         {m.coverage && <Tile label="Coverage"><RatioView r={m.coverage} /></Tile>}
-        {m.adversarial_accuracy && <Tile label="Adversarial accuracy"><RatioView r={m.adversarial_accuracy} /></Tile>}
+        {m.adversarial_accuracy && <Tile label="Adversarial accuracy" hint={m.adversarial_accuracy.definition}><RatioView r={m.adversarial_accuracy} /></Tile>}
+        {m.robust_accuracy && <Tile label="Robust accuracy" hint={m.robust_accuracy.definition}><RatioView r={m.robust_accuracy} /></Tile>}
         {m.attack_success_rate && <Tile label="Attack success rate" hint={m.attack_success_rate.definition}><RatioView r={m.attack_success_rate} emphasize /></Tile>}
+        {m.abstention_rate_adversarial && m.outcomes && m.outcomes.counts.abstained_adversarial > 0 && (
+          <Tile label="Adversarial abstention" hint={m.abstention_rate_adversarial.definition}><RatioView r={m.abstention_rate_adversarial} /></Tile>
+        )}
         {m.perturbation?.successful.n ? <Tile label="Mean ‖δ‖∞ (successful)"><span className="num">{m.perturbation.successful.linf_mean!.toFixed(4)}</span></Tile> : null}
       </div>
       <div className="grid-2">
-        <Panel title="Decision boundary of the evaluated system" subtitle="✕ = evaded, ○ = did not evade, line = perturbation">
+        <Panel title="Decision boundary of the evaluated system" subtitle="✕ = evaded, ○ = still correct, ◇ = abstained, line = perturbation">
           <BoundaryPlot boundary={boundary} dataset={dataset} samples={rec.samples} showTrain={false} title={`exp-${rec.experiment_id}`} />
         </Panel>
         <div className="stack">
@@ -113,7 +117,8 @@ export function ExperimentDetail() {
               <td className="num">{s.perturbation_linf?.toFixed(4) ?? "—"}</td><td className="num">{s.perturbation_l2?.toFixed(4) ?? "—"}</td>
               <td className="num">{s.queries ?? "—"}</td>
               <td>{s.attack_success == null ? (s.clean_correct ? "" : <span className="muted">clean miss</span>)
-                : s.attack_success ? <Badge tone="critical">evaded</Badge> : <Badge tone="good">held</Badge>}</td>
+                : s.attack_success ? <Badge tone="critical">evaded</Badge>
+                : s.pred_adversarial === -1 ? <Badge tone="warning">abstained</Badge> : <Badge tone="good">held</Badge>}</td>
             </tr>))}</tbody>
         </table></div>
         <p className="muted small">pred −1 = the system abstained (confidence rejection).</p>

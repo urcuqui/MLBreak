@@ -13,6 +13,18 @@ Three distinct evaluations are kept deliberately separate:
 :meth:`ExperimentEngine.replay` is something else again: it re-executes a
 stored experiment from its recorded request and checks the results are
 bit-for-bit identical (reproducibility, not robustness).
+
+Lineage: a parent experiment (for ``defend`` and for adaptive attacks) must be a
+completed, non-adaptive attack against the undefended model, must pass the
+evidence integrity check, and must share scenario, model, seed, dataset split and
+base-model artifact with the child. Adaptive attacks must also use the same
+perturbation budget (norm, ε) and the same test samples, so the comparison is
+like for like. The validated provenance is stored in ``lineage``.
+
+Execution limits: every experiment runs inside a concurrency gate and against a
+wall-clock deadline that covers model training, adversarial training, the attack
+loops and evaluation. Deadlines are cooperative (checked between fits, rounds,
+attack steps and samples); see ``docs/reproducibility.md`` for the bound.
 """
 
 from __future__ import annotations
@@ -24,22 +36,24 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import sklearn
 
 from . import __version__
-from .attacks import (ABSTAIN, BudgetViolation, ExperimentTimeout, QueryBudgetExceeded,
+from .attacks import (ABSTAIN, BudgetViolation, ExperimentTimeout, QueryBudgetExceeded, _check_deadline,
                       enforce_constraints, gradient_attack, lp_norm, random_search_attack)
 from .config import LIMITS
 from .data import load_dataset
 from .defenses import DeployedSystem, base_model, build_system, logit_of
 from .evidence import EvidenceStore
 from .hashing import sha256_json
+from .integrity import (metrics_sha256, record_sha256, results_fingerprint, samples_sha256, verify_record)
+from .metrics import classify, clean_metrics, outcome_metrics
 from .owasp import get_category
-from .schemas import (AttackRequest, BaselineRequest, BoundaryRequest, DefendRequest,
-                      ExperimentRecord, SampleResult)
+from .schemas import (SCHEMA_V1, AttackRequest, BaselineRequest, BoundaryRequest, DefendRequest, ExperimentRecord,
+                      SampleResult)
 
 
 @dataclass(frozen=True)
@@ -84,11 +98,6 @@ def _new_id() -> str:
     return f"MLB-EXP-{uuid.uuid4().hex[:12]}"
 
 
-def _ratio(num: int, den: int, definition: str) -> dict[str, Any]:
-    return {"numerator": int(num), "denominator": int(den),
-            "value": (num / den) if den else None, "definition": definition}
-
-
 def _stats(linf: np.ndarray, l2: np.ndarray) -> dict[str, Any]:
     if len(linf) == 0:
         return {"n": 0}
@@ -97,21 +106,48 @@ def _stats(linf: np.ndarray, l2: np.ndarray) -> dict[str, Any]:
             "l2_max": float(np.max(l2)), "l2_median": float(np.median(l2))}
 
 
+def _blas_threads() -> Any:
+    try:
+        from threadpoolctl import threadpool_info  # shipped with scikit-learn
+        return [{"api": i.get("user_api"), "lib": i.get("internal_api"), "threads": i.get("num_threads")}
+                for i in threadpool_info()]
+    except Exception:  # pragma: no cover - informational only
+        return None
+
+
+# Which record fields are expected to be bit-for-bit identical on replay, and which are not.
+REPRODUCIBLE_FIELDS = {
+    "bitwise": [
+        "request / config_sha256", "dataset.train_sha256", "dataset.test_sha256", "model.artifact_sha256",
+        "target_system.model_artifact_sha256", "samples (x_adversarial, predictions, probabilities, queries, outcome)",
+        "metrics", "samples_sha256", "metrics_sha256", "results_sha256", "lineage (parent hashes)",
+    ],
+    "runtime": [
+        "experiment_id", "created_at", "duration_ms", "replay_of", "record_sha256 (covers runtime fields)",
+        "environment versions / platform / blas_threads", "status when a wall-clock timeout is hit",
+    ],
+    "scope": "bit-for-bit on the same platform, CPU architecture, BLAS build and library versions",
+}
+
+
 def reproducibility_info() -> dict[str, Any]:
+    import pydantic
     return {
         "mlbreak_version": __version__,
         "python": sys.version.split()[0],
         "numpy": np.__version__,
         "scikit_learn": sklearn.__version__,
+        "pydantic": pydantic.__version__,
         "platform": platform.platform(),
         "machine": platform.machine(),
+        "blas_threads": _blas_threads(),
         "deterministic": True,
+        "fields": REPRODUCIBLE_FIELDS,
         "note": "Bit-identical replay is expected on the same platform and library versions.",
     }
 
 
-def results_fingerprint(samples: list[SampleResult], metrics: dict[str, Any]) -> str:
-    return sha256_json({"samples": [s.model_dump() for s in samples], "metrics": metrics})
+ENVIRONMENT_KEYS = ("mlbreak_version", "python", "numpy", "scikit_learn", "platform", "machine")
 
 
 class ExperimentEngine:
@@ -120,20 +156,27 @@ class ExperimentEngine:
         self.store = store
         self._gate = threading.BoundedSemaphore(max_concurrent)
         self.time_limit = time_limit
+        # Only one regression suite at a time (see regression.run_suite).
+        self.suite_lock = threading.Lock()
 
     # ------------------------------------------------------------------ API
     def run_baseline(self, req: BaselineRequest, replay_of: str | None = None) -> ExperimentRecord:
         return self._run("baseline", req, self._baseline, replay_of)
 
     def run_attack(self, req: AttackRequest, replay_of: str | None = None) -> ExperimentRecord:
-        return self._run("attack", req, self._attack, replay_of)
+        if req.parent_experiment_id and req.target_defense is None:
+            raise InvalidExperiment("parent_experiment_id is only valid for adaptive attacks (set target_defense); "
+                                    "a non-adaptive attack against the undefended model has no parent")
+        parent = self._load_parent(req.parent_experiment_id) if req.parent_experiment_id else None
+        return self._run("attack", req, lambda r, deadline: self._attack(r, deadline, parent), replay_of)
 
     def run_defend(self, req: DefendRequest, replay_of: str | None = None) -> ExperimentRecord:
-        parent = self.store.load(req.parent_experiment_id)  # raises ExperimentNotFound
-        if parent.mode != "attack" or parent.evaluation != "attack" or parent.status != "completed":
-            raise InvalidExperiment(
-                "defend/replay requires a completed attack experiment against the undefended model")
+        parent = self._load_parent(req.parent_experiment_id)  # raises ExperimentNotFound / InvalidExperiment
         return self._run("defend", req, lambda r, deadline: self._defend(r, parent, deadline), replay_of)
+
+    def verify(self, experiment_id: str) -> dict[str, Any]:
+        """Evidence integrity check of a stored record (no re-execution)."""
+        return verify_record(self.store.load(experiment_id))
 
     def replay(self, experiment_id: str) -> dict[str, Any]:
         """Re-execute a stored experiment from its request and compare results exactly."""
@@ -147,38 +190,82 @@ class ExperimentEngine:
         else:
             new = self.run_defend(DefendRequest.model_validate(original.request), replay_of=experiment_id)
 
+        o_rep, n_rep = original.reproducibility, new.reproducibility
+        legacy = original.schema_version == SCHEMA_V1
         pairs = [
             ("status", original.status, new.status),
+            ("config_sha256", o_rep.get("config_sha256"), n_rep.get("config_sha256")),
             ("model_artifact_sha256", original.model["artifact_sha256"], new.model.get("artifact_sha256")),
             ("target_system_artifact_sha256", original.target_system["model_artifact_sha256"],
              new.target_system.get("model_artifact_sha256")),
             ("train_split_sha256", original.dataset["train_sha256"], new.dataset.get("train_sha256")),
             ("test_split_sha256", original.dataset["test_sha256"], new.dataset.get("test_sha256")),
-            ("results_sha256", original.reproducibility["results_sha256"],
-             new.reproducibility.get("results_sha256")),
+            ("samples_sha256", samples_sha256(original.samples), n_rep.get("samples_sha256")),
         ]
+        if not legacy:
+            pairs += [("metrics_sha256", o_rep.get("metrics_sha256"), n_rep.get("metrics_sha256")),
+                      ("results_sha256", o_rep.get("results_sha256"), n_rep.get("results_sha256"))]
         checks = [{"check": n, "original": a, "replay": b, "match": a == b} for n, a, b in pairs]
+        env_diff = {k: {"original": o_rep.get(k), "replay": n_rep.get(k)} for k in ENVIRONMENT_KEYS
+                    if o_rep.get(k) != n_rep.get(k)}
+        notes = []
+        if legacy:
+            notes.append("Original record uses schema v1, whose adversarial_accuracy definition counted abstentions "
+                         "as correct; metrics are not comparable, so per-sample results are compared instead.")
+        if env_diff:
+            notes.append("The runtime environment differs from the original; bit-identical results are only expected "
+                         "on the same platform and library versions.")
         return {"original_experiment_id": experiment_id, "replay_experiment_id": new.experiment_id,
-                "identical": all(c["match"] for c in checks), "checks": checks}
+                "identical": all(c["match"] for c in checks), "checks": checks,
+                "environment_differences": env_diff, "notes": notes}
 
     def boundary(self, req: BoundaryRequest) -> dict[str, Any]:
-        scen = SCENARIOS[req.scenario_id]
-        ds = load_dataset(scen.dataset_id, req.seed)
-        system = build_system(req.model_id, scen.dataset_id, req.seed, req.defense)
-        xs = np.linspace(*ds.spec.domain[0], req.resolution)
-        ys = np.linspace(*ds.spec.domain[1], req.resolution)
-        gx, gy = np.meshgrid(xs, ys)
-        d = system.decide(np.c_[gx.ravel(), gy.ravel()])
-        shape = gx.shape
-        return {
-            "x": xs.round(5).tolist(), "y": ys.round(5).tolist(),
-            "p1": d.p1.reshape(shape).round(5).tolist(),
-            "abstain": (d.labels == ABSTAIN).reshape(shape).astype(int).tolist(),
-            "target_system": system.describe(),
-            "model": system.model.describe(),
-        }
+        """Decision-boundary grid. Runs inside the concurrency gate and the wall-clock deadline because
+        building a defended system may trigger adversarial training."""
+        def work(deadline: float) -> dict[str, Any]:
+            scen = SCENARIOS[req.scenario_id]
+            ds = load_dataset(scen.dataset_id, req.seed)
+            system = build_system(req.model_id, scen.dataset_id, req.seed, req.defense, deadline)
+            xs = np.linspace(*ds.spec.domain[0], req.resolution)
+            ys = np.linspace(*ds.spec.domain[1], req.resolution)
+            gx, gy = np.meshgrid(xs, ys)
+            d = system.decide(np.c_[gx.ravel(), gy.ravel()])
+            shape = gx.shape
+            return {
+                "x": xs.round(5).tolist(), "y": ys.round(5).tolist(),
+                "p1": d.p1.reshape(shape).round(5).tolist(),
+                "abstain": (d.labels == ABSTAIN).reshape(shape).astype(int).tolist(),
+                "target_system": system.describe(),
+                "model": system.model.describe(),
+            }
+        return self._guarded(work)
+
+    def dataset_view(self, scenario_id: str, model_id: str, seed: int) -> dict[str, Any]:
+        """Training/test data and base-model predictions (gated: a new seed trains a model)."""
+        def work(deadline: float) -> dict[str, Any]:
+            scen = SCENARIOS[scenario_id]
+            ds = load_dataset(scen.dataset_id, seed)
+            model = base_model(model_id, scen.dataset_id, seed)
+            _check_deadline(deadline)
+            p1 = model.proba(ds.X_test)
+            return {
+                "scenario": scen.__dict__, "dataset": ds.describe(), "model": model.describe(),
+                "train": {"X": ds.X_train.round(6).tolist(), "y": ds.y_train.tolist()},
+                "test": {"X": ds.X_test.round(6).tolist(), "y": ds.y_test.tolist(),
+                         "pred": model.predict(ds.X_test).tolist(), "p1": np.round(p1, 6).tolist()},
+            }
+        return self._guarded(work)
 
     # ------------------------------------------------------------ internals
+    def _guarded(self, fn: Callable[[float], Any]) -> Any:
+        """Run non-experiment work under the same concurrency gate and deadline as experiments."""
+        if not self._gate.acquire(blocking=False):
+            raise EngineBusy("too many concurrent experiments; retry shortly")
+        try:
+            return fn(time.monotonic() + self.time_limit)
+        finally:
+            self._gate.release()
+
     def _run(self, mode: str, req, fn, replay_of: str | None) -> ExperimentRecord:
         if not self._gate.acquire(blocking=False):
             raise EngineBusy("too many concurrent experiments; retry shortly")
@@ -194,24 +281,29 @@ class ExperimentEngine:
             body["samples"] = body.get("samples", [])
             repro = reproducibility_info()
             repro["config_sha256"] = sha256_json(req.model_dump(mode="json"))
-            repro["results_sha256"] = results_fingerprint(body["samples"], body["metrics"]) \
-                if status == "completed" else None
+            completed = status == "completed"
+            repro["samples_sha256"] = samples_sha256(body["samples"]) if completed else None
+            repro["metrics_sha256"] = metrics_sha256(body["metrics"]) if completed else None
+            repro["results_sha256"] = results_fingerprint(body["samples"], body["metrics"]) if completed else None
             repro["replay_command"] = f"mlbreak replay {exp_id}"
+            repro["verify_command"] = f"mlbreak check {exp_id}"
             record = ExperimentRecord(
                 experiment_id=exp_id, created_at=_now(), mode=mode, status=status, error=error,
                 replay_of=replay_of, request=req.model_dump(mode="json"), reproducibility=repro,
                 duration_ms=round((time.monotonic() - started) * 1000, 2), **body,
             )
+            record.reproducibility["record_sha256"] = record_sha256(record)
             self.store.save(record)
             return record
         finally:
             self._gate.release()
 
-    def _context(self, scenario_id: str, model_id: str, seed: int):
+    def _context(self, scenario_id: str, model_id: str, seed: int, deadline: float | None = None):
         scen = SCENARIOS[scenario_id]
         cat = get_category(scen.owasp_id)
         ds = load_dataset(scen.dataset_id, seed)
         model = base_model(model_id, scen.dataset_id, seed)
+        _check_deadline(deadline)
         common = {
             "scenario_id": scen.scenario_id,
             "owasp": {"id": cat.id, "name": cat.name, "taxonomy": cat.taxonomy,
@@ -228,11 +320,66 @@ class ExperimentEngine:
             parent = self.store.load(req.parent_experiment_id)
             r = AttackRequest.model_validate(parent.request)
         _, ds, common = self._context(r.scenario_id, r.model_id, r.seed)
-        return {**common, "evaluation": "attack", "intentionally_vulnerable": True,
+        evaluation = "clean" if isinstance(req, BaselineRequest) else (
+            "replay" if isinstance(req, DefendRequest) else
+            "adaptive_attack" if getattr(req, "target_defense", None) is not None else "attack")
+        return {**common, "evaluation": evaluation, "intentionally_vulnerable": evaluation in ("attack", "clean"),
                 "attacker_capabilities": None, "target_system": {"model_artifact_sha256": None},
                 "attack_config": getattr(r, "attack", None) and r.attack.model_dump(),
-                "defense_config": None}
+                "defense_config": None, "parent_experiment_id": getattr(req, "parent_experiment_id", None)}
 
+    # ------------------------------------------------------------- lineage
+    def _load_parent(self, parent_id: str) -> ExperimentRecord:
+        """Load a parent and check its own validity (status, evaluation type, evidence integrity)."""
+        parent = self.store.load(parent_id)  # raises ExperimentNotFound
+        if parent.status != "completed":
+            raise InvalidExperiment(f"parent {parent_id} did not complete (status {parent.status})")
+        if parent.mode != "attack" or parent.evaluation != "attack":
+            raise InvalidExperiment(
+                f"parent {parent_id} must be a non-adaptive attack against the undefended model "
+                f"(got mode={parent.mode}, evaluation={parent.evaluation})")
+        integrity = verify_record(parent)
+        if not integrity["ok"]:
+            failed = [c["check"] for c in integrity["checks"] if c["status"] == "fail"]
+            raise InvalidExperiment(f"parent {parent_id} failed the evidence integrity check: {failed}")
+        return parent
+
+    def _lineage(self, parent: ExperimentRecord, relation: str, *, scenario_id: str, model_id: str, seed: int,
+                 ds, model_hash: str, extra_checks: list[str]) -> dict[str, Any]:
+        """Check that a child experiment is compatible with its parent and return the provenance."""
+        problems = []
+        if parent.scenario_id != scenario_id:
+            problems.append(f"scenario ({parent.scenario_id} ≠ {scenario_id})")
+        if parent.model.get("model_id") != model_id:
+            problems.append(f"model ({parent.model.get('model_id')} ≠ {model_id})")
+        if parent.seed != seed:
+            problems.append(f"seed ({parent.seed} ≠ {seed})")
+        fp = ds.fingerprint()
+        if (parent.dataset.get("dataset_id"), parent.dataset.get("train_sha256"), parent.dataset.get("test_sha256")) != \
+                (ds.spec.dataset_id, fp["train_sha256"], fp["test_sha256"]):
+            problems.append("dataset split hashes")
+        if parent.model.get("artifact_sha256") != model_hash:
+            problems.append("base-model artifact hash (the parent's perturbations were crafted against a different "
+                            "model)")
+        if problems:
+            raise InvalidExperiment(f"parent {parent.experiment_id} is incompatible: differs in " + ", ".join(problems))
+        return {
+            "relation": relation,
+            "parent_experiment_id": parent.experiment_id,
+            "parent_evaluation": parent.evaluation,
+            "parent_schema_version": parent.schema_version,
+            "parent_config_sha256": parent.reproducibility.get("config_sha256"),
+            "parent_results_sha256": parent.reproducibility.get("results_sha256"),
+            "parent_record_sha256": parent.reproducibility.get("record_sha256"),
+            "shared": {"scenario_id": scenario_id, "model_id": model_id, "seed": seed,
+                       "dataset_train_sha256": fp["train_sha256"], "dataset_test_sha256": fp["test_sha256"],
+                       "base_model_artifact_sha256": model_hash},
+            "checks_passed": ["parent completed", "parent is a non-adaptive attack on the undefended model",
+                              "parent evidence integrity", "scenario", "model", "seed", "dataset split hashes",
+                              "base-model artifact hash", *extra_checks],
+        }
+
+    # ---------------------------------------------------------- evaluations
     @staticmethod
     def _select(ds, selection) -> np.ndarray:
         n = len(ds.y_test)
@@ -246,20 +393,11 @@ class ExperimentEngine:
     @staticmethod
     def _clean_metrics(system: DeployedSystem, ds) -> dict[str, Any]:
         d = system.decide(ds.X_test)
-        n = len(ds.y_test)
-        correct = int(np.sum(d.labels == ds.y_test))
-        accepted = d.labels != ABSTAIN
-        out = {"clean_accuracy": _ratio(correct, n, "correct decisions / all test samples "
-                                                   "(abstentions count as not correct)")}
-        if system.reject_threshold is not None:
-            out["coverage"] = _ratio(int(accepted.sum()), n, "non-abstained decisions / all test samples")
-            out["selective_accuracy"] = _ratio(correct, int(accepted.sum()),
-                                               "correct decisions / non-abstained decisions")
-        return out
+        return clean_metrics(d.labels, ds.y_test, system.reject_threshold is not None)
 
     def _baseline(self, req: BaselineRequest, deadline: float) -> dict[str, Any]:
-        scen, ds, common = self._context(req.scenario_id, req.model_id, req.seed)
-        system = build_system(req.model_id, scen.dataset_id, req.seed, req.defense)
+        scen, ds, common = self._context(req.scenario_id, req.model_id, req.seed, deadline)
+        system = build_system(req.model_id, scen.dataset_id, req.seed, req.defense, deadline)
         d = system.decide(ds.X_test)
         samples = [
             SampleResult(test_index=i, y_true=int(ds.y_test[i]), x_original=ds.X_test[i].tolist(),
@@ -269,20 +407,38 @@ class ExperimentEngine:
             for i in range(len(ds.y_test))
         ]
         metrics = self._clean_metrics(system, ds)
-        metrics["train_accuracy"] = _ratio(int(np.sum(system.model.predict(ds.X_train) == ds.y_train)),
-                                           len(ds.y_train), "model argmax correct / training samples")
+        metrics["train_accuracy"] = {
+            "numerator": int(np.sum(system.model.predict(ds.X_train) == ds.y_train)),
+            "denominator": int(len(ds.y_train)),
+            "value": float(np.mean(system.model.predict(ds.X_train) == ds.y_train)),
+            "population": "training-split samples",
+            "definition": "model argmax correct / training samples (no abstention policy applied)"}
         return {**common, "evaluation": "clean", "intentionally_vulnerable": req.defense is None,
                 "attacker_capabilities": None, "target_system": system.describe(),
                 "attack_config": None, "defense_config": system.defense,
                 "metrics": metrics, "samples": samples}
 
-    def _attack(self, req: AttackRequest, deadline: float) -> dict[str, Any]:
-        scen, ds, common = self._context(req.scenario_id, req.model_id, req.seed)
-        if req.parent_experiment_id:
-            self.store.load(req.parent_experiment_id)  # must exist
-        system = build_system(req.model_id, scen.dataset_id, req.seed, req.target_defense)
+    def _attack(self, req: AttackRequest, deadline: float, parent: ExperimentRecord | None) -> dict[str, Any]:
+        scen, ds, common = self._context(req.scenario_id, req.model_id, req.seed, deadline)
         cfg = req.attack
         idx = self._select(ds, req.samples)
+        lineage = None
+        if parent is not None:
+            pcfg = parent.attack_config or {}
+            budget_problems = [f"{k} ({pcfg.get(k)} ≠ {getattr(cfg, k)})" for k in ("norm", "epsilon")
+                               if pcfg.get(k) != getattr(cfg, k)]
+            parent_idx = [s.test_index for s in parent.samples]
+            if parent_idx != idx.tolist():
+                budget_problems.append("selected test samples")
+            if budget_problems:
+                raise InvalidExperiment(
+                    f"adaptive attack is not comparable with parent {parent.experiment_id}: differs in "
+                    + ", ".join(budget_problems))
+            lineage = self._lineage(parent, "adaptive_attack_of", scenario_id=req.scenario_id, model_id=req.model_id,
+                                    seed=req.seed, ds=ds, model_hash=common["model"]["artifact_sha256"],
+                                    extra_checks=["same perturbation norm and ε", "same selected test samples"])
+            lineage["attack_differs"] = pcfg.get("attack") != cfg.attack
+        system = build_system(req.model_id, scen.dataset_id, req.seed, req.target_defense, deadline)
         X0, y = ds.X_test[idx], ds.y_test[idx]
         clean = system.decide(X0)
         correct = clean.labels == y
@@ -302,6 +458,7 @@ class ExperimentEngine:
                                        lo, hi, rngs, deadline)
         budget_ratio = enforce_constraints(X0[att], out.x_adv, cfg.epsilon, cfg.norm, lo, hi)
         adv = system.decide(out.x_adv) if len(att) else None
+        _check_deadline(deadline)
 
         caps = {
             "knowledge": cfg.knowledge,
@@ -314,9 +471,8 @@ class ExperimentEngine:
         }
         if cfg.knowledge == "white-box":
             caps["effective_confidence_kappa"] = out.effective_confidence
-        samples, success = self._samples(idx, X0, y, clean, att, out.x_adv, adv, out.queries)
-        metrics = self._attack_metrics(system, ds, cfg, idx, y, correct, att, success, out.x_adv, X0,
-                                       adv, budget_ratio)
+        samples = self._samples(idx, X0, y, clean, att, out.x_adv, adv, out.queries)
+        metrics = self._attack_metrics(system, ds, cfg, samples, att, out.x_adv, X0, budget_ratio)
         metrics["queries"] = {
             "total": int(out.queries.sum()),
             "mean_per_attacked_sample": float(out.queries.mean()) if len(att) else 0.0,
@@ -327,15 +483,16 @@ class ExperimentEngine:
                 "intentionally_vulnerable": not adaptive, "attacker_capabilities": caps,
                 "target_system": system.describe(), "attack_config": cfg.model_dump(),
                 "defense_config": system.defense, "parent_experiment_id": req.parent_experiment_id,
-                "metrics": metrics, "samples": samples}
+                "lineage": lineage, "metrics": metrics, "samples": samples}
 
     def _defend(self, req: DefendRequest, parent: ExperimentRecord, deadline: float) -> dict[str, Any]:
         preq = AttackRequest.model_validate(parent.request)
-        scen, ds, common = self._context(preq.scenario_id, preq.model_id, preq.seed)
-        if common["model"]["artifact_sha256"] != parent.model["artifact_sha256"]:
-            raise InvalidExperiment("model artifact hash differs from the parent experiment; "
-                                    "the perturbations cannot be replayed faithfully")
-        system = build_system(preq.model_id, scen.dataset_id, preq.seed, req.defense)
+        scen, ds, common = self._context(preq.scenario_id, preq.model_id, preq.seed, deadline)
+        lineage = self._lineage(parent, "replay_against_defense_of", scenario_id=preq.scenario_id,
+                                model_id=preq.model_id, seed=preq.seed, ds=ds,
+                                model_hash=common["model"]["artifact_sha256"],
+                                extra_checks=["parent inputs match the regenerated test split"])
+        system = build_system(preq.model_id, scen.dataset_id, preq.seed, req.defense, deadline)
         cfg = preq.attack
         idx = np.array([s.test_index for s in parent.samples], dtype=int)
         X0, y = ds.X_test[idx], ds.y_test[idx]
@@ -349,41 +506,49 @@ class ExperimentEngine:
                                            ds.domain_low, ds.domain_high)
         clean = system.decide(X0)
         correct = clean.labels == y
-        # Replay success is only meaningful where the defended system was right on the clean input.
+        # Replay is only evaluated where the defended system was right on the clean input.
         keep = att[correct[att]]
         keep_pos = np.flatnonzero(correct[att])
         adv = system.decide(x_adv[keep_pos]) if len(keep) else None
         queries = np.zeros(len(keep), dtype=np.int64)
-        samples, success = self._samples(idx, X0, y, clean, keep, x_adv[keep_pos], adv, queries)
-        metrics = self._attack_metrics(system, ds, cfg, idx, y, correct, keep, success, x_adv[keep_pos],
-                                       X0, adv, budget_ratio)
-        pm = parent.metrics
+        samples = self._samples(idx, X0, y, clean, keep, x_adv[keep_pos], adv, queries)
+        metrics = self._attack_metrics(system, ds, cfg, samples, keep, x_adv[keep_pos], X0, budget_ratio)
+        # Undefended side recomputed from the parent's per-sample evidence with the SAME definitions
+        # (a v1 parent's stored adversarial_accuracy used a different formula).
+        pm = outcome_metrics(parent.samples, can_abstain=False)
         metrics["comparison"] = {
-            "clean_accuracy": {"undefended": pm["clean_accuracy"], "defended": metrics["clean_accuracy"]},
+            "clean_accuracy": {"undefended": parent.metrics["clean_accuracy"], "defended": metrics["clean_accuracy"]},
             "adversarial_accuracy": {"undefended": pm["adversarial_accuracy"],
                                      "defended": metrics["adversarial_accuracy"]},
+            "robust_accuracy": {"undefended": pm["robust_accuracy"], "defended": metrics["robust_accuracy"]},
             "attack_success_rate": {"undefended": pm["attack_success_rate"],
                                     "defended": metrics["attack_success_rate"]},
+            "abstention_rate_adversarial": {"undefended": pm["abstention_rate_adversarial"],
+                                            "defended": metrics["abstention_rate_adversarial"]},
         }
         metrics["notes"] = [
             "Non-adaptive replay: the adversarial inputs were crafted against the undefended model "
             f"in {parent.experiment_id} and re-submitted unchanged.",
             "A low replay success rate does not establish robustness. Run an adaptive attack "
             "(a new attack against the defended system) before drawing conclusions.",
+            "Abstentions on replayed inputs are neither attack successes nor correct predictions; "
+            "see abstention_rate_adversarial and robust_accuracy.",
         ]
         caps = dict(parent.attacker_capabilities or {})
         caps["knows_defense"] = False
         caps["note"] = "perturbations replayed from the parent experiment; no new queries/gradients"
+        _check_deadline(deadline)
         return {**common, "evaluation": "replay", "intentionally_vulnerable": False,
                 "attacker_capabilities": caps, "target_system": system.describe(),
                 "attack_config": cfg.model_dump(), "defense_config": system.defense,
-                "parent_experiment_id": parent.experiment_id, "metrics": metrics, "samples": samples}
+                "parent_experiment_id": parent.experiment_id, "lineage": lineage,
+                "metrics": metrics, "samples": samples}
 
     @staticmethod
-    def _samples(idx, X0, y, clean, att, x_adv, adv, queries):
-        """Build per-sample results. ``att`` are positions (into idx) that were attacked."""
+    def _samples(idx, X0, y, clean, att, x_adv, adv, queries) -> list[SampleResult]:
+        """Build per-sample results. ``att`` are positions (into idx) whose adversarial input was evaluated."""
         pos = {int(p): k for k, p in enumerate(att)}
-        samples, success = [], np.zeros(len(idx), dtype=bool)
+        samples = []
         for p, ti in enumerate(idx):
             s = SampleResult(
                 test_index=int(ti), y_true=int(y[p]), x_original=X0[p].tolist(),
@@ -395,39 +560,25 @@ class ExperimentEngine:
                 k = pos[p]
                 delta = x_adv[k] - X0[p]
                 label = int(adv.labels[k])
-                ok = label != int(y[p]) and label != ABSTAIN
-                success[p] = ok
                 s.x_adversarial = x_adv[k].tolist()
                 s.pred_adversarial = label
                 s.p1_adversarial = float(adv.p1[k])
                 s.confidence_adversarial = float(adv.confidence[k])
                 s.perturbation_linf = float(lp_norm(delta, "linf")[0])
                 s.perturbation_l2 = float(lp_norm(delta, "l2")[0])
-                s.attack_success = bool(ok)
+                s.attack_success = bool(label != int(y[p]) and label != ABSTAIN)
                 s.queries = int(queries[k])
+            s.outcome = classify(s)
             samples.append(s)
-        return samples, success
+        return samples
 
-    def _attack_metrics(self, system, ds, cfg, idx, y, correct, att, success, x_adv, X0, adv,
-                        budget_ratio) -> dict[str, Any]:
-        n = len(idx)
+    def _attack_metrics(self, system, ds, cfg, samples, att, x_adv, X0, budget_ratio) -> dict[str, Any]:
         m = self._clean_metrics(system, ds)
-        m["clean_accuracy_selected"] = _ratio(int(correct.sum()), n, "correct clean decisions / selected samples")
-        # Correct samples that were not attacked (or not replayed) remain correct.
-        m["adversarial_accuracy"] = _ratio(
-            int(np.sum(correct) - np.sum(success)), n,
-            "selected samples still decided correctly after the attack / selected samples")
-        m["attack_success_rate"] = _ratio(
-            int(success.sum()), len(att),
-            "attacked samples whose clean input was decided correctly and whose adversarial input "
-            "is decided as a different class (not an abstention) / attacked samples decided correctly "
-            "on their clean input")
-        if adv is not None and system.reject_threshold is not None:
-            m["abstained_on_adversarial"] = _ratio(int(np.sum(adv.labels == ABSTAIN)), len(att),
-                                                   "adversarial inputs the system abstained on / attacked samples")
+        m.update(outcome_metrics(samples, system.reject_threshold is not None))
         if len(att):
             deltas = x_adv - X0[att]
-            linf, l2, succ_mask = lp_norm(deltas, "linf"), lp_norm(deltas, "l2"), success[att]
+            linf, l2 = lp_norm(deltas, "linf"), lp_norm(deltas, "l2")
+            succ_mask = np.array([samples[int(p)].outcome == "evaded" for p in att], dtype=bool)
         else:
             linf, l2, succ_mask = np.array([]), np.array([]), np.array([], dtype=bool)
         m["perturbation"] = {"norm": cfg.norm, "epsilon": cfg.epsilon, "max_budget_ratio": budget_ratio,

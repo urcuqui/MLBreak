@@ -16,6 +16,8 @@ plus (optionally) a decision policy. Two real controls are provided:
 from __future__ import annotations
 
 import json
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -23,7 +25,7 @@ from typing import Any
 import numpy as np
 from pydantic import TypeAdapter
 
-from .attacks import ABSTAIN, gradient_attack
+from .attacks import ABSTAIN, _check_deadline, gradient_attack
 from .data import Dataset, load_dataset
 from .models import DifferentiableClassifier, train_model
 from .schemas import AdversarialTrainingDefense, AttackConfig, ConfidenceRejectionDefense, DefenseConfig
@@ -74,40 +76,79 @@ def base_model(model_id: str, dataset_id: str, seed: int) -> DifferentiableClass
 
 
 def adversarially_train(model_id: str, ds: Dataset, seed: int,
-                        cfg: AdversarialTrainingDefense) -> DifferentiableClassifier:
+                        cfg: AdversarialTrainingDefense, deadline: float | None = None) -> DifferentiableClassifier:
+    """Adversarial training under a cooperative wall-clock ``deadline``.
+
+    The deadline is checked before every round, inside the PGD example generation (per step) and
+    after every model fit. A single scikit-learn ``fit`` cannot be interrupted, so the worst-case
+    overshoot is one fit (bounded by ``max_iter`` and the fixed training-set size).
+    """
     attack = AttackConfig(attack="pgd", norm=cfg.norm, epsilon=cfg.epsilon, steps=cfg.steps)
     lo, hi = ds.domain_low, ds.domain_high
     model = base_model(model_id, ds.spec.dataset_id, seed)
+    _check_deadline(deadline)
     X_aug, y_aug = [ds.X_train], [ds.y_train]
     for r in range(cfg.rounds):
+        _check_deadline(deadline)
         rngs = [np.random.default_rng([seed, r, i]) for i in range(len(ds.X_train))]
-        out = gradient_attack(model, ds.X_train, ds.y_train, attack, lo, hi, rngs)
+        out = gradient_attack(model, ds.X_train, ds.y_train, attack, lo, hi, rngs, deadline)
         X_aug.append(out.x_adv)
         y_aug.append(ds.y_train)
+        _check_deadline(deadline)
         model = train_model(
             model_id, np.vstack(X_aug), np.concatenate(y_aug), seed,
             training_note=f"adversarial training round {r + 1}/{cfg.rounds} "
                           f"(PGD {cfg.norm} ε={cfg.epsilon}, {cfg.steps} steps)",
         )
+        _check_deadline(deadline)
     return model
 
 
-@lru_cache(maxsize=32)
-def _defended_model(model_id: str, dataset_id: str, seed: int, cfg_json: str) -> DifferentiableClassifier:
-    cfg = AdversarialTrainingDefense.model_validate_json(cfg_json)
-    return adversarially_train(model_id, load_dataset(dataset_id, seed), seed, cfg)
+_DEFENDED_CACHE_SIZE = 32
+_defended_cache: "OrderedDict[tuple, DifferentiableClassifier]" = OrderedDict()
+_defended_lock = threading.Lock()
+
+
+def defended_model(model_id: str, dataset_id: str, seed: int, cfg: AdversarialTrainingDefense,
+                   deadline: float | None = None) -> DifferentiableClassifier:
+    """Adversarially trained model, cached ONLY after training completed within the deadline.
+
+    An interrupted training (ExperimentTimeout) leaves the cache untouched, so a later request never
+    receives a partially trained model.
+    """
+    key = (model_id, dataset_id, seed, json.dumps(cfg.model_dump(), sort_keys=True))
+    with _defended_lock:
+        if key in _defended_cache:
+            _defended_cache.move_to_end(key)
+            return _defended_cache[key]
+    model = adversarially_train(model_id, load_dataset(dataset_id, seed), seed, cfg, deadline)
+    with _defended_lock:
+        _defended_cache[key] = model
+        _defended_cache.move_to_end(key)
+        while len(_defended_cache) > _DEFENDED_CACHE_SIZE:
+            _defended_cache.popitem(last=False)
+    return model
+
+
+def clear_model_caches() -> None:
+    """Drop cached trained models (tests and memory pressure). Datasets stay cached."""
+    base_model.cache_clear()
+    with _defended_lock:
+        _defended_cache.clear()
 
 
 def build_system(model_id: str, dataset_id: str, seed: int,
-                 defense: AdversarialTrainingDefense | ConfidenceRejectionDefense | None) -> DeployedSystem:
+                 defense: AdversarialTrainingDefense | ConfidenceRejectionDefense | None,
+                 deadline: float | None = None) -> DeployedSystem:
+    model = base_model(model_id, dataset_id, seed)
+    _check_deadline(deadline)  # a cold base-model fit may already have used the budget
     if defense is None:
-        return DeployedSystem(base_model(model_id, dataset_id, seed), None)
+        return DeployedSystem(model, None)
     dump = defense.model_dump()
     if isinstance(defense, AdversarialTrainingDefense):
-        cfg_json = json.dumps(dump, sort_keys=True)
-        return DeployedSystem(_defended_model(model_id, dataset_id, seed, cfg_json), dump)
+        return DeployedSystem(defended_model(model_id, dataset_id, seed, defense, deadline), dump)
     if isinstance(defense, ConfidenceRejectionDefense):
-        return DeployedSystem(base_model(model_id, dataset_id, seed), dump, defense.threshold)
+        return DeployedSystem(model, dump, defense.threshold)
     raise TypeError(type(defense))
 
 

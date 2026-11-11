@@ -33,9 +33,15 @@ def _print(rec) -> None:
     print(f"  {rec.experiment_id}  mode={rec.mode} evaluation={rec.evaluation} status={rec.status}")
     if rec.error:
         print(f"    error: {rec.error}")
-    for key in ("clean_accuracy", "coverage", "adversarial_accuracy", "attack_success_rate"):
+    for key in ("clean_accuracy", "coverage", "adversarial_accuracy", "robust_accuracy", "attack_success_rate",
+                "abstention_rate_adversarial"):
         if key in m:
-            print(f"    {key:<22} {_pct(m[key])}")
+            print(f"    {key:<28} {_pct(m[key])}")
+    if "outcomes" in m:
+        counts = ", ".join(f"{k}={v}" for k, v in m["outcomes"]["counts"].items() if v)
+        print(f"    outcomes (n={m['outcomes']['n_selected']}): {counts}")
+    if rec.lineage:
+        print(f"    lineage: {rec.lineage['relation']} {rec.lineage['parent_experiment_id']} (validated)")
     if "perturbation" in m and m["perturbation"]["attacked"]["n"]:
         p = m["perturbation"]
         print(f"    mean ‖δ‖ ({p['norm']}): L∞={p['attacked']['linf_mean']:.4f}  "
@@ -119,34 +125,61 @@ def cmd_verify(args) -> int:
     return 0 if report["ok"] else 1
 
 
+def _print_check(report: dict) -> None:
+    print(f"  {report['experiment_id']} ({report['schema_version']}): "
+          f"{'INTEGRITY OK' if report['ok'] else 'INTEGRITY FAILED'}")
+    for c in report["checks"]:
+        print(f"    [{c['status']:^7}] {c['check']:<20} {c['detail']}")
+
+
+def cmd_check(args) -> int:
+    report = _engine().verify(args.experiment_id)
+    if args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        _print_check(report)
+    return 0 if report["ok"] else 1
+
+
 def cmd_demo(args) -> int:
     eng = _engine()
+    records = []
+
+    def show(rec):
+        records.append(rec)
+        _print(rec)
+        return rec
+
     print("1) Baseline — clean evaluation of the undefended model")
-    base = eng.run_baseline(BaselineRequest())
-    _print(base)
+    base = show(eng.run_baseline(BaselineRequest()))
     print("\n2) Attack — white-box PGD L∞ ε=0.3 against the undefended model")
-    atk = eng.run_attack(AttackRequest())
-    _print(atk)
+    atk = show(eng.run_attack(AttackRequest()))
     print("\n3) Defend (replay) — same perturbations against an adversarially trained model")
-    _print(eng.run_defend(DefendRequest(parent_experiment_id=atk.experiment_id,
+    show(eng.run_defend(DefendRequest(parent_experiment_id=atk.experiment_id,
                                         defense=AdversarialTrainingDefense())))
     print("\n4) Adaptive attack — NEW PGD attack against the adversarially trained model")
-    _print(eng.run_attack(AttackRequest(target_defense=AdversarialTrainingDefense(),
+    show(eng.run_attack(AttackRequest(target_defense=AdversarialTrainingDefense(),
                                         parent_experiment_id=atk.experiment_id)))
     print("\n5) Defend (replay) — same perturbations against confidence rejection (τ=0.8)")
-    _print(eng.run_defend(DefendRequest(parent_experiment_id=atk.experiment_id,
+    show(eng.run_defend(DefendRequest(parent_experiment_id=atk.experiment_id,
                                         defense=ConfidenceRejectionDefense())))
     print("\n6) Adaptive attack — PGD that targets confidence above τ")
-    _print(eng.run_attack(AttackRequest(target_defense=ConfidenceRejectionDefense(),
+    show(eng.run_attack(AttackRequest(target_defense=ConfidenceRejectionDefense(),
                                         parent_experiment_id=atk.experiment_id)))
     print("\n7) Black-box — decision-based random search (500 label queries/sample)")
-    _print(eng.run_attack(AttackRequest(attack=AttackConfig(attack="random_search", query_budget=500))))
+    show(eng.run_attack(AttackRequest(attack=AttackConfig(attack="random_search", query_budget=500))))
     print(f"\n8) Exact replay of {atk.experiment_id}")
     r = eng.replay(atk.experiment_id)
     print(f"  identical={r['identical']} replay={r['replay_experiment_id']}")
+    for note in r["notes"]:
+        print(f"  note: {note}")
+    print("\n9) Evidence integrity — hashes and metrics re-derived from per-sample results")
+    integrity = [eng.verify(rec.experiment_id) for rec in records]
+    for rep_ in integrity:
+        print(f"  {rep_['experiment_id']}: {'ok' if rep_['ok'] else 'FAILED'}")
     print(f"\nEvidence written to {eng.store.dir}")
     print(f"  {eng.store.json_path(atk.experiment_id)}\n  {eng.store.md_path(atk.experiment_id)}")
-    return 0 if r["identical"] else 1
+    return 0 if r["identical"] and all(i["ok"] for i in integrity) else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -201,6 +234,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("experiment_id")
     s.add_argument("--format", choices=["json", "md"], default="md")
     s.set_defaults(fn=cmd_export)
+
+    s = sub.add_parser("check", help="verify an experiment's evidence integrity without re-running it")
+    s.add_argument("experiment_id")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_check)
 
     s = sub.add_parser("verify", help="run the security regression suite (non-zero exit on failure)")
     s.set_defaults(fn=cmd_verify)

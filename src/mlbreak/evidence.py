@@ -102,10 +102,14 @@ def summarize(rec: dict[str, Any]) -> dict[str, Any]:
         "defense": (rec.get("defense_config") or {}).get("kind"),
         "n_samples": len(rec.get("samples") or []),
         "clean_accuracy": (m.get("clean_accuracy") or {}).get("value"),
+        "adversarial_accuracy": (m.get("adversarial_accuracy") or {}).get("value"),
+        "robust_accuracy": (m.get("robust_accuracy") or {}).get("value"),
+        "abstention_rate_adversarial": (m.get("abstention_rate_adversarial") or {}).get("value"),
         "attack_success_rate": asr.get("value"),
         "attack_success": f"{asr['numerator']}/{asr['denominator']}" if asr else None,
         "parent_experiment_id": rec.get("parent_experiment_id"),
         "replay_of": rec.get("replay_of"),
+        "schema_version": rec.get("schema_version"),
         "error": rec.get("error"),
     }
 
@@ -144,6 +148,7 @@ def render_markdown(rec: ExperimentRecord) -> str:
         lines.append(f"| Parent experiment | `{rec.parent_experiment_id}` |")
     if rec.replay_of:
         lines.append(f"| Replay of | `{rec.replay_of}` |")
+    lines.append(f"| Evidence schema | `{rec.schema_version}` |")
     if rec.error:
         lines += ["", f"**Error:** {rec.error}"]
 
@@ -158,13 +163,25 @@ def render_markdown(rec: ExperimentRecord) -> str:
 
     if m:
         lines += ["", "## Metrics", "", "| Metric | Value |", "|---|---|"]
-        for key in ("clean_accuracy", "clean_accuracy_selected", "coverage",
-                    "adversarial_accuracy", "attack_success_rate"):
+        for key in ("clean_accuracy", "abstention_rate_clean", "coverage", "selective_accuracy",
+                    "clean_accuracy_selected", "adversarial_accuracy", "robust_accuracy", "attack_success_rate",
+                    "abstention_rate_adversarial", "attack_resisted_rate", "adversarial_coverage",
+                    "adversarial_selective_accuracy"):
             if key in m:
                 lines.append(f"| {key} | {_ratio(m[key])} |")
-        for key in ("attack_success_rate",):
-            if key in m:
-                lines += ["", f"*Attack success definition:* {m[key]['definition']}"]
+        if "outcomes" in m:
+            o = m["outcomes"]
+            lines += ["", "### Outcome partition (selected samples)", "",
+                      "| Outcome | Count |", "|---|---|"]
+            lines += [f"| {k} | {v} |" for k, v in o["counts"].items()]
+            lines += [f"| **total (n_selected)** | **{o['n_selected']}** |", "",
+                      f"Attack-eligible samples: {o['attack_eligible']} (evaded + abstained_adversarial + robust). "
+                      "Abstentions are never counted as correct predictions nor as attack successes."]
+        lines += ["", "### Metric definitions", ""]
+        for key, v in m.items():
+            if isinstance(v, dict) and "definition" in v and "numerator" in v:
+                pop = f" *Population:* {v['population']}." if v.get("population") else ""
+                lines.append(f"- **{key}**: {v['definition']}.{pop}")
         if "perturbation" in m:
             p = m["perturbation"]
             lines += ["", "### Perturbation magnitude", "",
@@ -194,6 +211,13 @@ def render_markdown(rec: ExperimentRecord) -> str:
             lines.append(f"| {s.test_index} | {s.y_true} | {s.pred_original} | {pa} | {d} | {s.attack_success} |")
         lines += ["", "Prediction `-1` means the system abstained (confidence rejection)."]
 
+    if rec.lineage:
+        lin = rec.lineage
+        lines += ["", "## Lineage", "",
+                  f"Relation: `{lin['relation']}` → parent `{lin['parent_experiment_id']}` "
+                  f"({lin['parent_evaluation']}, {lin['parent_schema_version']})", "",
+                  "Validated before execution: " + "; ".join(lin.get("checks_passed", [])) + ".", "",
+                  "```json", json.dumps(lin, indent=2), "```"]
     r = rec.reproducibility
     lines += ["", "## Reproducibility", "", "```json", json.dumps(r, indent=2), "```", "",
               f"Replay with: `mlbreak replay {rec.experiment_id}`", ""]

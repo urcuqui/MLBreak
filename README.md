@@ -38,23 +38,28 @@ seeded `make_moons` dataset. In the lab you can:
    * Controls: **adversarial training** (model-level) and **confidence rejection** (system-level
      abstention).
 4. **Replay** any experiment from its recorded request and verify bit-identical results.
-5. **Export evidence**: JSON (`mlbreak.experiment/v1`), a Markdown report and a per-sample CSV.
+5. **Export evidence**: JSON (`mlbreak.experiment/v2`; v1 records still load), a Markdown report and a per-sample CSV.
+   Every record is tamper-evident (`record_sha256`) and can be verified without re-running it (`mlbreak check`).
 6. **Security regression**: declared invariants in `security_cases/` are re-checked by
    `mlbreak verify` and by pytest.
 
 Reference results (seed 7, MLP, PGD L∞ ε=0.3, 150 test samples). These are produced by `mlbreak demo`:
 
-| Evaluation | Clean accuracy | Attack success |
-|---|---|---|
-| Undefended | 96.7% | 39.3% (57/145) |
-| Adversarial training, replay | 96.7% | 13.2% (19/144) |
-| Adversarial training, **adaptive** | 96.7% | 25.5% (37/145) |
-| Confidence rejection τ=0.8, replay | 86.7% (coverage 88.7%) | 0.0% (0/130) |
-| Confidence rejection τ=0.8, **adaptive** | 86.7% | 15.4% (20/130) |
-| Black-box random search, 500 queries/sample | 96.7% | 38.6% (56/145) |
+| Evaluation | Clean accuracy | Adversarial accuracy | Robust accuracy | Attack success | Adversarial abstention |
+|---|---|---|---|---|---|
+| Undefended | 96.7% | 58.7% (88/150) | 58.7% (88/150) | 39.3% (57/145) | 0.0% (0/145) |
+| Adversarial training, replay | 96.7% | 84.0% (126/150) | 83.3% (125/150) | 13.2% (19/144) | 0.0% (0/144) |
+| Adversarial training, **adaptive** | 96.7% | 72.0% (108/150) | 72.0% (108/150) | 25.5% (37/145) | 0.0% (0/145) |
+| Confidence rejection τ=0.8, replay | 86.7% (coverage 88.7%) | 35.3% (53/150) | 35.3% (53/150) | 0.0% (0/130) | **59.2% (77/130)** |
+| Confidence rejection τ=0.8, **adaptive** | 86.7% (coverage 88.7%) | 35.3% (53/150) | 35.3% (53/150) | 15.4% (20/130) | 43.8% (57/130) |
+| Black-box random search, 500 queries/sample | 96.7% | 59.3% (89/150) | 59.3% (89/150) | 38.6% (56/145) | 0.0% (0/145) |
 
-The rejection rows are the point of the lab. Replay makes that defense look perfect; an adaptive
-attacker shows it is not. Exact values can shift slightly across platforms and library versions
+The rejection rows are the point of the lab. Replay makes that defense look perfect (0% success);
+an adaptive attacker shows it is not. Note what the replay row really says: most replayed inputs are
+*abstained on*, not classified correctly, so adversarial accuracy is 35.3%, not the 86.7% an
+earlier formula reported by counting abstentions as correct. Metric definitions are in
+[docs/methodology.md](docs/methodology.md#metrics). Adversarial and robust accuracy differ only when a
+correctly classified sample was not perturbed by the replayed parent (one sample in the AT replay row). Exact values can shift slightly across platforms and library versions
 (see [docs/reproducibility.md](docs/reproducibility.md)).
 
 ## Architecture
@@ -135,8 +140,9 @@ mlbreak baseline [--model logreg] [--seed 7] [--defense confidence_rejection --t
 mlbreak attack --attack pgd --norm linf --epsilon 0.3 --steps 40
 mlbreak attack --attack random_search --queries 500
 mlbreak defend <ATTACK_ID> --defense adversarial_training          # replay
-mlbreak attack --defense adversarial_training --parent <ATTACK_ID>  # adaptive
+mlbreak attack --defense adversarial_training --parent <ATTACK_ID>  # adaptive (same ε, norm and samples as the parent)
 mlbreak replay <ID>         # exit 0 only if results are bit-identical
+mlbreak check <ID> [--json] # evidence integrity: hashes + metrics re-derived from per-sample results
 mlbreak export <ID> --format md|json
 mlbreak list
 ```

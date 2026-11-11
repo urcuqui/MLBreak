@@ -480,7 +480,9 @@ function MetricsCompare({ cols }: { cols: [string, ExperimentRecord | undefined]
     ["Clean accuracy (test split)", (r) => <RatioView r={r.metrics.clean_accuracy} />],
     ["Coverage", (r) => <RatioView r={r.metrics.coverage} />],
     ["Adversarial accuracy", (r) => <RatioView r={r.metrics.adversarial_accuracy} />],
+    ["Robust accuracy", (r) => <RatioView r={r.metrics.robust_accuracy} />],
     ["Attack success rate", (r) => <RatioView r={r.metrics.attack_success_rate} emphasize />],
+    ["Adversarial abstention", (r) => <RatioView r={r.metrics.abstention_rate_adversarial} />],
     ["Mean ‖δ‖∞ (successful)", (r) => {
       const s = r.metrics.perturbation?.successful;
       return s?.n ? <span className="num">{s.linf_mean!.toFixed(4)}</span> : <span className="muted">—</span>;

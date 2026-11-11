@@ -35,9 +35,16 @@ def test_full_flow_via_api(client):
     d = client.post("/api/experiments/defend", json={"parent_experiment_id": aid,
                                                      "defense": {"kind": "confidence_rejection"}})
     assert d.status_code == 200 and d.json()["evaluation"] == "replay"
-    ad = client.post("/api/experiments/attack", json={"target_defense": {"kind": "adversarial_training"},
+    # An adaptive attack must be comparable with its parent: same ε/norm and the same test samples.
+    mismatched = client.post("/api/experiments/attack", json={"target_defense": {"kind": "adversarial_training"},
+                                                              "parent_experiment_id": aid})
+    assert mismatched.status_code == 422 and "selected test samples" in mismatched.json()["detail"]
+    ad = client.post("/api/experiments/attack", json={"attack": {"attack": "pgd", "epsilon": 0.3},
+                                                      "samples": {"indices": [0, 1, 2, 3, 4, 5]},
+                                                      "target_defense": {"kind": "adversarial_training"},
                                                       "parent_experiment_id": aid})
     assert ad.status_code == 200 and ad.json()["evaluation"] == "adaptive_attack"
+    assert ad.json()["lineage"]["relation"] == "adaptive_attack_of"
     r = client.post(f"/api/experiments/{aid}/replay")
     assert r.status_code == 200 and r.json()["identical"]
     ids = [e["experiment_id"] for e in client.get("/api/experiments").json()]
