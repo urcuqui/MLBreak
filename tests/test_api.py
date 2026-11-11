@@ -12,9 +12,9 @@ def test_owasp_registry_is_honest(client):
     cats = client.get("/api/owasp").json()["categories"]
     assert [c["id"] for c in cats] == [f"ML{i:02d}:2023" for i in range(1, 11)]
     implemented = [c["id"] for c in cats if c["lab_status"] == "implemented"]
-    assert implemented == ["ML01:2023"]
-    for c in cats[1:]:
-        assert c["scenario_ids"] == []
+    assert implemented == ["ML01:2023", "ML02:2023"]
+    for c in cats[2:]:  # ML03–ML10: metadata only, no scenarios, no placeholder attacks
+        assert c["scenario_ids"] == [] and c["lab_status"] == "not_implemented"
 
 
 def test_dataset_endpoint(client):
@@ -55,7 +55,7 @@ def test_full_flow_via_api(client):
     assert md.status_code == 200 and "# MLBreak experiment" in md.text
     assert client.get(f"/api/experiments/{aid}/samples.csv").status_code == 200
     dash = client.get("/api/dashboard").json()
-    assert dash["experiments_total"] >= 5 and dash["owasp_implemented"] == 1
+    assert dash["experiments_total"] >= 5 and dash["owasp_implemented"] == 2
 
 
 @pytest.mark.parametrize("body", [

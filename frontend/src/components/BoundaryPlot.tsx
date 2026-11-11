@@ -3,7 +3,7 @@ import { Plot } from "./Plot";
 import type { BoundaryResponse, DatasetResponse, SampleResult } from "../types";
 
 export const CLASS_COLORS = ["#3987e5", "#d95926"]; // validated categorical slots 1-2 (dark)
-const SURFACE_SCALE: [number, string][] = [
+export const SURFACE_SCALE: [number, string][] = [
   [0, "#1c4f8f"], [0.35, "#22364f"], [0.5, "#383835"], [0.65, "#57301f"], [1, "#9a3d17"],
 ];
 

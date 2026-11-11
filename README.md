@@ -13,10 +13,32 @@ regression-testing traditional ML models — organised around the
 | OWASP category | Lab |
 |---|---|
 | **ML01:2023 Input Manipulation Attack** | ✅ implemented: evasion of a 2-D classifier |
-| ML02–ML10:2023 | registry metadata only. **No lab, no placeholder attacks.** |
+| **ML02:2023 Data Poisoning Attack** | ✅ implemented: label flipping with retraining, kNN label sanitisation |
+| ML03–ML10:2023 | registry metadata only. **No lab, no placeholder attacks.** |
 
 The first release is a working vertical slice, not a scaffold. Every metric in the UI, CLI and
 reports comes from an experiment that actually ran.
+
+## What the ML02 lab does
+
+The same bundled dataset and model configurations, attacked through **training labels** instead of test
+inputs ([docs/ml02-data-poisoning.md](docs/ml02-data-poisoning.md)):
+
+1. **Clean training**: the reference model, trained on true labels.
+2. **Poison and retrain**: flip the labels of a bounded fraction of the training set, chosen at random,
+   from one target class, or from the target-class rows nearest the clean boundary (seeded and
+   budget-verified). The model is then actually retrained. The UI shows the clean and poisoned decision
+   boundaries, the flipped rows, and the test samples the poisoning broke.
+3. **Defensive replay**: replay the *exact* poisoned training set through kNN label sanitisation (relabel or
+   remove), retrain, and report detection precision/recall, false positives, recovery, and the defense's
+   cost on clean data.
+
+| Poisoning (MLP, seed 7) | Undefended ASR | kNN detects | Defended ASR |
+|---|---|---|---|
+| random 20% | 3.4% (5/145) | 61/70 | 1.4% |
+| targeted class 1, 10%, random rows | 5.6% (4/71) | 31/35 | 2.8% |
+| targeted class 1, 10%, **boundary rows** | **23.9%** (17/71) | **0/35** | 22.5% |
+| targeted class 1, 20%, random rows | **47.9%** (34/71) | 28/70 | **52.1%** (worse) |
 
 ## What the ML01 lab does
 
@@ -39,7 +61,7 @@ seeded `make_moons` dataset. In the lab you can:
      abstention).
 4. **Replay** any experiment from its recorded request and verify bit-identical results.
 5. **Export evidence**: JSON (`mlbreak.experiment/v2`; v1 records still load), a Markdown report and a per-sample CSV.
-   Every record is tamper-evident (`record_sha256`) and can be verified without re-running it (`mlbreak check`).
+   Every record carries SHA-256 fingerprints and can be verified without re-running it (`mlbreak check`); replays refuse records that fail verification. This is an integrity check, **not authenticity**: anyone who can rewrite an evidence file can recompute its hashes (see [reproducibility.md](docs/reproducibility.md#integrity-is-not-authenticity)).
 6. **Security regression**: declared invariants in `security_cases/` are re-checked by
    `mlbreak verify` and by pytest.
 
@@ -130,7 +152,9 @@ UI development with hot reload: `make run` in one shell, `make dev` in another (
 ```bash
 make test           # pytest: unit + integration + API + regression + static security checks
 make verify         # security regression gate, non-zero exit on failure
-make demo           # Baseline → Attack → Defend (replay) → Adaptive → Black-box → exact replay
+make demo           # ML01: Baseline → Attack → Defend (replay) → Adaptive → Black-box → exact replay
+PYTHONPATH=src .venv/bin/python -m mlbreak demo --lab ml02   # ML02: clean → poison → defensive replay → replay
+PYTHONPATH=src .venv/bin/python -m mlbreak demo --lab all
 ```
 
 CLI reference (`PYTHONPATH=src .venv/bin/python -m mlbreak …`, or `mlbreak …` if the entry point is on PATH):
@@ -141,7 +165,11 @@ mlbreak attack --attack pgd --norm linf --epsilon 0.3 --steps 40
 mlbreak attack --attack random_search --queries 500
 mlbreak defend <ATTACK_ID> --defense adversarial_training          # replay
 mlbreak attack --defense adversarial_training --parent <ATTACK_ID>  # adaptive (same ε, norm and samples as the parent)
-mlbreak replay <ID>         # exit 0 only if results are bit-identical
+mlbreak poison baseline [--model logreg] [--seed 7]
+mlbreak poison attack --strategy random --fraction 0.2
+mlbreak poison attack --strategy targeted --target-class 1 --fraction 0.1 --selection boundary
+mlbreak poison defend <POISON_ID> [--k 10] [--threshold 0.5] [--action relabel|remove]
+mlbreak replay <ID>         # verifies integrity first (exit 3 if tampered); exit 0 only if bit-identical
 mlbreak check <ID> [--json] # evidence integrity: hashes + metrics re-derived from per-sample results
 mlbreak export <ID> --format md|json
 mlbreak list
@@ -166,6 +194,7 @@ Evidence is written to `var/experiments/` (override with `MLBREAK_DATA_DIR`).
 
 ## Documentation
 
+* [ML02 data poisoning: threat model, metrics, assumptions, limitations](docs/ml02-data-poisoning.md)
 * [Threat model](docs/threat-model.md)
 * [Experimental methodology](docs/methodology.md)
 * [OWASP mapping](docs/owasp-mapping.md)

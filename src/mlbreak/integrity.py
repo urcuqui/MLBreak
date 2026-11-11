@@ -13,7 +13,14 @@ Fingerprints (all SHA-256 over canonical JSON, see :mod:`mlbreak.hashing`):
 
 :func:`verify_record` recomputes every fingerprint and re-derives the outcome metrics from the
 per-sample evidence, so a record whose metrics were edited (or computed by a buggy formula) is
-detected without re-running the experiment.
+detected without re-running the experiment. Replays and lineage (parents of defend/adaptive
+experiments) require this check to pass.
+
+Integrity is NOT authenticity. These are unkeyed SHA-256 digests stored *inside* the record they
+protect. They detect accidental corruption and inconsistent or partial edits, but anyone who can write
+the evidence file can recompute every digest and produce a record that verifies. Proving *who* produced
+a record, or that it was not rewritten wholesale, needs a key the editor does not hold (HMAC or a
+digital signature) or an append-only external log. MLBreak has neither; see ``docs/reproducibility.md``.
 """
 
 from __future__ import annotations
@@ -24,6 +31,11 @@ from .hashing import sha256_json
 from .metrics import (OUTCOME_METRIC_KEYS, InconsistentSample, classify, clean_metrics, consistency_errors,
                       outcome_metrics)
 from .schemas import SCHEMA_V1, ExperimentRecord, SampleResult
+
+
+INTEGRITY_GUARANTEE = (
+    "integrity (internal consistency) only, not authenticity: unkeyed SHA-256 digests stored in the record "
+    "detect corruption and inconsistent edits, but a writer who recomputes every digest is not detected")
 
 
 def sample_dump(s: SampleResult, include_outcome: bool = True) -> dict[str, Any]:
@@ -113,5 +125,6 @@ def verify_record(record: ExperimentRecord) -> dict[str, Any]:
         "experiment_id": record.experiment_id,
         "schema_version": record.schema_version,
         "ok": all(c["status"] != "fail" for c in checks),
+        "guarantee": INTEGRITY_GUARANTEE,
         "checks": checks,
     }

@@ -20,16 +20,20 @@ export function Experiments() {
         <select value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter by type">
           <option value="all">All types</option><option value="clean">Baseline</option><option value="attack">Attack</option>
           <option value="replay">Defense replay</option><option value="adaptive_attack">Adaptive attack</option>
+          <option value="clean_training">ML02 clean training</option><option value="poisoning">ML02 poisoning</option>
+          <option value="poisoning_replay">ML02 defense replay</option>
         </select>}>
         <div className="table-wrap"><table className="table">
           <thead><tr><th>Experiment</th><th>Created (UTC)</th><th>Type</th><th>Status</th><th>Model</th><th>Attack</th>
-            <th>Defense</th><th>Clean acc.</th><th>Attack success</th><th>Parent / replay of</th></tr></thead>
+            <th>Defense</th><th title="Accuracy on clean test inputs of the evaluated model (for ML02: the poisoned/defended model)">Clean-input acc.</th><th>Attack success</th><th>Parent / replay of</th></tr></thead>
           <tbody>{shown.map((e) => (
             <tr key={e.experiment_id}>
               <td><ExpLink id={e.experiment_id} /></td><td className="mono small">{e.created_at.slice(0, 19).replace("T", " ")}</td>
               <td><EvalBadge evaluation={e.evaluation} /></td><td><StatusBadge status={e.status} /></td>
               <td className="mono small">{e.model_id}</td>
-              <td className="small">{e.attack ? `${e.attack} · ${e.norm} · ε=${e.epsilon}` : "—"}</td>
+              <td className="small">{!e.attack ? "—" : e.family === "poisoning"
+                ? `${e.attack} · ${Math.round((e.poison_fraction ?? 0) * 100)}%${e.target_class != null ? ` · class ${e.target_class}` : ""}`
+                : `${e.attack} · ${e.norm} · ε=${e.epsilon}`}</td>
               <td className="small">{e.defense ?? "—"}</td>
               <td className="num">{pct(e.clean_accuracy)}</td>
               <td className="num">{e.attack_success_rate == null ? "—" : `${pct(e.attack_success_rate)} (${e.attack_success})`}</td>

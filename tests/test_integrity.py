@@ -132,3 +132,77 @@ def test_record_hash_covers_lineage(engine, attack_record):
     assert d.reproducibility["record_sha256"] == record_sha256(d)
     forged = d.model_copy(update={"lineage": {**d.lineage, "parent_experiment_id": "MLB-EXP-000000000000"}})
     assert record_sha256(forged) != d.reproducibility["record_sha256"]
+
+
+# ---------------------------------------------------------------------------
+# Replay requires evidence integrity
+# ---------------------------------------------------------------------------
+import pytest  # noqa: E402
+
+from mlbreak.experiments import EvidenceIntegrityError  # noqa: E402
+from mlbreak.integrity import metrics_sha256  # noqa: E402
+
+
+def _n_records(store):
+    return len(store.list())
+
+
+@pytest.mark.parametrize("edit", [
+    pytest.param(lambda d: d["metrics"]["attack_success_rate"].update(numerator=0), id="metric"),
+    pytest.param(lambda d: d["request"]["attack"].update(epsilon=0.9), id="request"),
+    pytest.param(lambda d: d.update(created_at="2000-01-01T00:00:00+00:00"), id="timestamp-only"),
+    pytest.param(lambda d: d["samples"][0].update(x_original=[9.0, 9.0]), id="sample"),
+])
+def test_replay_refuses_tampered_evidence_without_executing(engine, store, attack_record, edit):
+    _tamper(store, attack_record.experiment_id, edit)
+    before = _n_records(store)
+    with pytest.raises(EvidenceIntegrityError) as exc:
+        engine.replay(attack_record.experiment_id)
+    assert exc.value.report["ok"] is False
+    assert any(c["status"] == "fail" for c in exc.value.report["checks"])
+    assert _n_records(store) == before  # nothing was re-executed or stored
+
+
+def test_replay_reports_original_integrity(engine, attack_record):
+    r = engine.replay(attack_record.experiment_id)
+    assert r["original_integrity"]["ok"] is True
+    assert r["original_integrity"]["experiment_id"] == attack_record.experiment_id
+
+
+def test_replay_integrity_gate_api_and_cli(client, tmp_path, monkeypatch):
+    a = client.post("/api/experiments/attack", json={"samples": {"max_samples": 10}}).json()
+    store = client.app.state.store
+    _tamper(store, a["experiment_id"], lambda d: d["metrics"]["adversarial_accuracy"].update(numerator=0))
+    r = client.post(f"/api/experiments/{a['experiment_id']}/replay")
+    assert r.status_code == 409
+    body = r.json()
+    assert "integrity" in body["detail"] and body["integrity"]["ok"] is False
+    from mlbreak import cli
+    monkeypatch.setenv("MLBREAK_DATA_DIR", str(tmp_path / "var"))
+    assert cli.main(["replay", a["experiment_id"]]) == 3
+
+
+def test_fully_reforged_record_passes_integrity_but_not_replay(engine, store, attack_record):
+    """Integrity is not authenticity: a forger who recomputes EVERY fingerprint passes verify_record.
+
+    The replay gate therefore accepts it, and only re-execution exposes the fabricated results. This test
+    pins that documented limitation (docs/reproducibility.md, "Integrity is not authenticity").
+    """
+    def reforge(d):
+        s = next(s for s in d["samples"] if s["outcome"] == "evaded")
+        s["pred_adversarial"], s["attack_success"], s["outcome"] = s["y_true"], False, "robust"
+        rec = ExperimentRecord.model_validate(d)
+        from mlbreak.metrics import outcome_metrics
+        d["metrics"].update(outcome_metrics(rec.samples, can_abstain=False))
+        rec = ExperimentRecord.model_validate(d)
+        rep = d["reproducibility"]
+        rep["samples_sha256"] = samples_sha256(rec.samples)
+        rep["metrics_sha256"] = metrics_sha256(rec.metrics)
+        rep["results_sha256"] = results_fingerprint(rec.samples, rec.metrics)
+        rep["record_sha256"] = record_sha256(ExperimentRecord.model_validate(d))
+    forged = _tamper(store, attack_record.experiment_id, reforge)
+    assert verify_record(forged)["ok"] is True
+    r = engine.replay(attack_record.experiment_id)
+    assert r["identical"] is False
+    failed = {c["check"] for c in r["checks"] if not c["match"]}
+    assert {"samples_sha256", "metrics_sha256", "results_sha256"} <= failed

@@ -57,6 +57,9 @@ export function EvalBadge({ evaluation }: { evaluation: string }) {
     attack: ["critical", "attack"],
     adaptive_attack: ["warning", "adaptive attack"],
     replay: ["info", "defense replay"],
+    clean_training: ["neutral", "clean training"],
+    poisoning: ["critical", "poisoning"],
+    poisoning_replay: ["info", "poisoning defense replay"],
   };
   const [tone, label] = map[evaluation] ?? ["neutral", evaluation];
   return <Badge tone={tone}>{label}</Badge>;
@@ -72,11 +75,12 @@ export function ErrorBox({ error }: { error: string | null }) {
   return <div className="error" role="alert">✕ {error}</div>;
 }
 
-export function VulnerableBanner() {
+export function VulnerableBanner({ children }: { children?: ReactNode }) {
   return (
     <div className="vuln-banner" role="note">
-      <strong>⚠ Intentionally vulnerable scenario.</strong> The undefended model in this lab is deliberately
-      left exposed to test-time evasion for education and defensive research. Local use only.
+      <strong>⚠ Intentionally vulnerable scenario.</strong>{" "}
+      {children ?? <>The undefended model in this lab is deliberately left exposed to test-time evasion for education
+        and defensive research. Local use only.</>}
     </div>
   );
 }

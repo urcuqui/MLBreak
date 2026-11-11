@@ -116,7 +116,19 @@ def test_replay_against_rejection_reports_abstentions_separately(engine, attack_
     buggy = m["clean_accuracy_selected"]["numerator"] - m["attack_success_rate"]["numerator"]
     assert buggy - m["adversarial_accuracy"]["numerator"] == c["abstained_adversarial"]
     assert m["abstained_on_adversarial"]["numerator"] == c["abstained_adversarial"]
-    assert m["adversarial_coverage"]["value"] < m["coverage"]["value"] + 1e-12 or True
+    # Coverage under the replay: selected samples whose decision (adversarial if evaluated, clean otherwise)
+    # is not an abstention.
+    n = m["outcomes"]["n_selected"]
+    cov = m["adversarial_coverage"]
+    assert cov["denominator"] == n
+    assert cov["numerator"] == n - c["clean_abstained"] - c["abstained_adversarial"]
+    # The parent attacked the whole test split, so the selected population IS the clean-coverage population:
+    # the clean coverage of these samples must agree with the full-split `coverage` metric ...
+    assert n == m["coverage"]["denominator"]
+    assert n - c["clean_abstained"] == m["coverage"]["numerator"]
+    # ... and adversarial abstentions (> 0, asserted above) strictly reduce coverage below it.
+    assert cov["numerator"] < m["coverage"]["numerator"]
+    assert cov["value"] < m["coverage"]["value"]
     assert consistency_errors(m) == []
 
 

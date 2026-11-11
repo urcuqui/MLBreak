@@ -78,7 +78,19 @@ SCENARIOS: dict[str, Scenario] = {
             "inference time. The attacker perturbs a correctly classified input "
             "within an Lp budget ε so the deployed system returns the wrong class."
         ),
-    )
+    ),
+    "ml02-moons-label-flip": Scenario(
+        scenario_id="ml02-moons-label-flip",
+        title="Label-flipping poisoning of the training set, with retraining",
+        owasp_id="ML02:2023",
+        dataset_id="moons-v1",
+        intentionally_vulnerable=True,
+        description=(
+            "The attacker flips the labels of a bounded fraction of the training set (randomly, or "
+            "targeting one class). The victim retrains on the poisoned set; kNN label sanitisation is "
+            "evaluated by replaying the exact poisoned training set."
+        ),
+    ),
 }
 
 
@@ -88,6 +100,32 @@ class EngineBusy(RuntimeError):
 
 class InvalidExperiment(ValueError):
     """The request is well-formed but cannot be executed (e.g. bad parent)."""
+
+
+class EvidenceIntegrityError(InvalidExperiment):
+    """A stored record failed :func:`~mlbreak.integrity.verify_record`; it must not be replayed or reused.
+
+    ``report`` is the full verification report (which checks failed and why).
+    """
+
+    def __init__(self, experiment_id: str, report: dict[str, Any]):
+        self.experiment_id = experiment_id
+        self.report = report
+        failed = [c["check"] for c in report["checks"] if c["status"] == "fail"]
+        super().__init__(f"experiment {experiment_id} failed the evidence integrity check {failed}; "
+                         "refusing to replay tampered or inconsistent evidence")
+
+
+def require_integrity(record) -> dict[str, Any]:
+    """Verify a stored record and raise :class:`EvidenceIntegrityError` if any check fails.
+
+    This is an *integrity* (consistency) check, not an authenticity check: see
+    ``docs/reproducibility.md#integrity-is-not-authenticity``.
+    """
+    report = verify_record(record)
+    if not report["ok"]:
+        raise EvidenceIntegrityError(record.experiment_id, report)
+    return report
 
 
 def _now() -> str:
@@ -158,6 +196,9 @@ class ExperimentEngine:
         self.time_limit = time_limit
         # Only one regression suite at a time (see regression.run_suite).
         self.suite_lock = threading.Lock()
+        # ML02 data-poisoning lab: shares this engine's gate, deadline and store; own records and metrics.
+        from .poisoning.engine import PoisoningLab
+        self.poisoning = PoisoningLab(self)
 
     # ------------------------------------------------------------------ API
     def run_baseline(self, req: BaselineRequest, replay_of: str | None = None) -> ExperimentRecord:
@@ -175,14 +216,30 @@ class ExperimentEngine:
         return self._run("defend", req, lambda r, deadline: self._defend(r, parent, deadline), replay_of)
 
     def verify(self, experiment_id: str) -> dict[str, Any]:
-        """Evidence integrity check of a stored record (no re-execution)."""
-        return verify_record(self.store.load(experiment_id))
+        """Evidence integrity check of a stored record (no re-execution). Dispatches on the record family."""
+        rec = self.store.load(experiment_id)
+        if not isinstance(rec, ExperimentRecord):
+            return self.poisoning.verify(rec)
+        return verify_record(rec)
+
+    def gated(self, fn: Callable[[float], Any]) -> Any:
+        """Run ``fn(deadline)`` inside the shared concurrency gate and wall-clock deadline (any lab family)."""
+        return self._guarded(fn)
 
     def replay(self, experiment_id: str) -> dict[str, Any]:
-        """Re-execute a stored experiment from its request and compare results exactly."""
+        """Re-execute a stored experiment from its request and compare results exactly.
+
+        The stored record must first pass the evidence integrity check. Replaying a record whose request,
+        results or metrics were edited would otherwise re-execute an arbitrary request and compare it
+        against fabricated results, so the replay is refused (:class:`EvidenceIntegrityError`) before
+        anything runs.
+        """
         original = self.store.load(experiment_id)
+        if not isinstance(original, ExperimentRecord):  # ML02 poisoning record
+            return self.poisoning.replay(original)
         if original.status != "completed":
             raise InvalidExperiment("only completed experiments can be replayed")
+        integrity = require_integrity(original)
         if original.mode == "baseline":
             new = self.run_baseline(BaselineRequest.model_validate(original.request), replay_of=experiment_id)
         elif original.mode == "attack":
@@ -217,6 +274,7 @@ class ExperimentEngine:
                          "on the same platform and library versions.")
         return {"original_experiment_id": experiment_id, "replay_experiment_id": new.experiment_id,
                 "identical": all(c["match"] for c in checks), "checks": checks,
+                "original_integrity": integrity,
                 "environment_differences": env_diff, "notes": notes}
 
     def boundary(self, req: BoundaryRequest) -> dict[str, Any]:
@@ -332,16 +390,15 @@ class ExperimentEngine:
     def _load_parent(self, parent_id: str) -> ExperimentRecord:
         """Load a parent and check its own validity (status, evaluation type, evidence integrity)."""
         parent = self.store.load(parent_id)  # raises ExperimentNotFound
+        if not isinstance(parent, ExperimentRecord):
+            raise InvalidExperiment(f"parent {parent_id} is not an ML01 evasion experiment")
         if parent.status != "completed":
             raise InvalidExperiment(f"parent {parent_id} did not complete (status {parent.status})")
         if parent.mode != "attack" or parent.evaluation != "attack":
             raise InvalidExperiment(
                 f"parent {parent_id} must be a non-adaptive attack against the undefended model "
                 f"(got mode={parent.mode}, evaluation={parent.evaluation})")
-        integrity = verify_record(parent)
-        if not integrity["ok"]:
-            failed = [c["check"] for c in integrity["checks"] if c["status"] == "fail"]
-            raise InvalidExperiment(f"parent {parent_id} failed the evidence integrity check: {failed}")
+        require_integrity(parent)  # EvidenceIntegrityError is an InvalidExperiment
         return parent
 
     def _lineage(self, parent: ExperimentRecord, relation: str, *, scenario_id: str, model_id: str, seed: int,

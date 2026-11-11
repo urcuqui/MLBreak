@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { Badge, ErrorBox, ExpLink, Panel } from "../components/ui";
-import type { RegressionReport, SecurityCase } from "../types";
+import type { PoisoningCase, RegressionReport, SecurityCase } from "../types";
 
 const KIND_HELP: Record<string, string> = {
   security: "the defense must hold",
@@ -10,7 +10,7 @@ const KIND_HELP: Record<string, string> = {
 };
 
 export function Regression() {
-  const [cases, setCases] = useState<SecurityCase[]>([]);
+  const [cases, setCases] = useState<(SecurityCase | PoisoningCase)[]>([]);
   const [report, setReport] = useState<RegressionReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,7 +43,12 @@ export function Regression() {
         const r = result(c.id);
         return (
           <Panel key={c.id} title={`${c.id} — ${c.title}`}
-            subtitle={<>{c.attack.attack} {c.attack.norm} ε={c.attack.epsilon} · defense {c.defense.kind} · defended evaluation: <strong>{c.defended_evaluation}</strong></>}
+            subtitle={"poison" in c
+              ? <>{c.owasp_id} · label flipping {c.poison.strategy}{c.poison.strategy === "targeted"
+                  ? ` (class ${c.poison.target_class}, ${c.poison.selection})` : ""} {Math.round(c.poison.fraction * 100)}% ·
+                  defense {c.defense.kind} (k={c.defense.k}, {c.defense.action}) · defended evaluation: <strong>replay</strong></>
+              : <>{c.owasp_id} · {c.attack.attack} {c.attack.norm} ε={c.attack.epsilon} · defense {c.defense.kind} ·
+                  defended evaluation: <strong>{c.defended_evaluation}</strong></>}
             actions={r ? (r.passed ? <Badge tone="good">pass</Badge> : <Badge tone="critical">fail</Badge>) : <Badge tone="neutral">not run</Badge>}>
             <p className="muted small">{c.rationale}</p>
             <div className="table-wrap"><table className="table">

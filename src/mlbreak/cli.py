@@ -8,8 +8,10 @@ import sys
 
 from .config import cases_dir, data_dir
 from .evidence import EvidenceStore
-from .experiments import ExperimentEngine
+from .experiments import EvidenceIntegrityError, ExperimentEngine
 from .regression import run_suite
+from .poisoning.schemas import (KnnLabelSanitization, LabelFlipConfig, PoisonAttackRequest, PoisonBaselineRequest,
+                                PoisonDefendRequest)
 from .schemas import (AdversarialTrainingDefense, AttackConfig, AttackRequest, BaselineRequest,
                       ConfidenceRejectionDefense, DefendRequest)
 
@@ -93,7 +95,12 @@ def cmd_defend(args) -> int:
 
 
 def cmd_replay(args) -> int:
-    result = _engine().replay(args.experiment_id)
+    try:
+        result = _engine().replay(args.experiment_id)
+    except EvidenceIntegrityError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        _print_check(exc.report)
+        return 3
     print(json.dumps(result, indent=2))
     return 0 if result["identical"] else 1
 
@@ -141,8 +148,80 @@ def cmd_check(args) -> int:
     return 0 if report["ok"] else 1
 
 
+_POISON_KEYS = ("clean_test_accuracy", "undefended_test_accuracy", "test_accuracy", "train_accuracy",
+                "clean_target_class_recall", "target_class_recall", "poison_rate", "attack_success_rate",
+                "undefended_attack_success_rate", "detection_recall", "detection_precision", "false_positive_rate",
+                "recovery_rate", "clean_data_test_accuracy")
+
+
+def _print_poison(rec) -> None:
+    print(f"  {rec.experiment_id}  ML02 mode={rec.mode} evaluation={rec.evaluation} status={rec.status}")
+    if rec.error:
+        print(f"    error: {rec.error}")
+    for key in _POISON_KEYS:
+        if key in rec.metrics:
+            print(f"    {key:<30} {_pct(rec.metrics[key])}")
+
+
+def cmd_poison(args) -> int:
+    lab = _engine().poisoning
+    if args.poison_cmd == "baseline":
+        rec = lab.run_baseline(PoisonBaselineRequest(model_id=args.model, seed=args.seed))
+    elif args.poison_cmd == "attack":
+        cfg = LabelFlipConfig(strategy=args.strategy, fraction=args.fraction,
+                              target_class=args.target_class if args.strategy == "targeted" else None,
+                              selection=args.selection if args.strategy == "targeted" else "random")
+        rec = lab.run_attack(PoisonAttackRequest(model_id=args.model, seed=args.seed, poison=cfg))
+    else:
+        rec = lab.run_defend(PoisonDefendRequest(parent_experiment_id=args.parent, defense=KnnLabelSanitization(
+            k=args.k, agreement_threshold=args.threshold, action=args.action)))
+    _print_poison(rec)
+    return 0 if rec.status == "completed" else 1
+
+
+def _demo_ml02(eng) -> tuple[list, bool]:
+    lab, recs = eng.poisoning, []
+
+    def show(rec):
+        recs.append(rec)
+        _print_poison(rec)
+        return rec
+
+    print("ML02-1) Clean training baseline")
+    show(lab.run_baseline(PoisonBaselineRequest()))
+    ok = True
+    for i, (title, cfg) in enumerate([
+        ("random label flipping, 20% of the training set", LabelFlipConfig(strategy="random", fraction=0.2)),
+        ("targeted flipping of class 1, 35 samples nearest the clean boundary",
+         LabelFlipConfig(strategy="targeted", fraction=0.1, target_class=1, selection="boundary")),
+    ], start=2):
+        print(f"\nML02-{i}a) Poison + retrain — {title}")
+        atk = show(lab.run_attack(PoisonAttackRequest(poison=cfg)))
+        print(f"ML02-{i}b) Defensive replay — kNN label sanitisation on the exact poisoned set")
+        show(lab.run_defend(PoisonDefendRequest(parent_experiment_id=atk.experiment_id)))
+        r = eng.replay(atk.experiment_id)
+        print(f"ML02-{i}c) Exact replay of {atk.experiment_id}: identical={r['identical']}")
+        ok &= r["identical"]
+    return recs, ok
+
+
 def cmd_demo(args) -> int:
     eng = _engine()
+    if args.lab in ("ml02", "all"):
+        recs, ok = _demo_ml02(eng)
+        integrity = [eng.verify(r.experiment_id) for r in recs]
+        print("\nML02 evidence integrity:", ", ".join(f"{i['experiment_id']}={'ok' if i['ok'] else 'FAILED'}"
+                                                  for i in integrity))
+        ok &= all(i["ok"] for i in integrity)
+        if args.lab == "ml02":
+            print(f"\nEvidence written to {eng.store.dir}")
+            return 0 if ok else 1
+        print("\n" + "=" * 72 + "\n")
+        return min(1, (0 if ok else 1) + _demo_ml01(eng))
+    return _demo_ml01(eng)
+
+
+def _demo_ml01(eng) -> int:
     records = []
 
     def show(rec):
@@ -243,7 +322,27 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("verify", help="run the security regression suite (non-zero exit on failure)")
     s.set_defaults(fn=cmd_verify)
 
+    s = sub.add_parser("poison", help="ML02 data poisoning: baseline | attack | defend")
+    psub = s.add_subparsers(dest="poison_cmd", required=True)
+    for name, hlp in (("baseline", "train on clean labels"), ("attack", "flip training labels and retrain")):
+        ps = psub.add_parser(name, help=hlp)
+        ps.add_argument("--model", default="mlp-tanh-16x16", choices=["mlp-tanh-16x16", "logreg"])
+        ps.add_argument("--seed", type=int, default=7)
+        if name == "attack":
+            ps.add_argument("--strategy", default="random", choices=["random", "targeted"])
+            ps.add_argument("--fraction", type=float, default=0.2, help="fraction of the training set to flip")
+            ps.add_argument("--target-class", type=int, default=1, choices=[0, 1])
+            ps.add_argument("--selection", default="random", choices=["random", "boundary"])
+        ps.set_defaults(fn=cmd_poison)
+    ps = psub.add_parser("defend", help="kNN label sanitisation on a poisoning experiment's exact training set")
+    ps.add_argument("parent")
+    ps.add_argument("--k", type=int, default=10)
+    ps.add_argument("--threshold", type=float, default=0.5)
+    ps.add_argument("--action", default="relabel", choices=["relabel", "remove"])
+    ps.set_defaults(fn=cmd_poison)
+
     s = sub.add_parser("demo", help="run the full Baseline → Attack → Defend → Replay walkthrough")
+    s.add_argument("--lab", default="ml01", choices=["ml01", "ml02", "all"])
     s.set_defaults(fn=cmd_demo)
     return p
 

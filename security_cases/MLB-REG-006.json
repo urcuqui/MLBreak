@@ -1,0 +1,21 @@
+{
+  "id": "MLB-REG-006",
+  "family": "poisoning",
+  "title": "kNN label sanitisation reduces sparse targeted label flipping",
+  "owasp_id": "ML02:2023",
+  "seed": 7,
+  "poison": {"strategy": "targeted", "fraction": 0.1, "target_class": 1, "selection": "random"},
+  "defense": {"kind": "knn_label_sanitization", "k": 10, "agreement_threshold": 0.5, "action": "relabel"},
+  "invariants": [
+    {"id": "target-class-damaged", "kind": "attack_canary", "posture": "undefended",
+     "metric": "target_class_recall", "op": "<=", "value": 0.92,
+     "description": "Flipping 10% of the training set (class 1 → 0) must still lower class-1 recall below 92% (clean model: 94.7%)."},
+    {"id": "flips-detected", "kind": "security", "posture": "defended",
+     "metric": "detection_recall", "op": ">=", "value": 0.80,
+     "description": "At least 80% of the sparse targeted flips must be flagged."},
+    {"id": "targeted-success-reduced", "kind": "security", "posture": "defended",
+     "metric": "attack_success_rate", "op": "<=", "value": 0.045,
+     "description": "At most 4.5% of the class-1 test samples the clean model gets right may be misclassified after sanitisation (undefended: 5.6%)."}
+  ],
+  "rationale": "Sparse targeted flips scattered across class 1 still disagree with their neighbourhoods. The effect sizes are small on this dataset (a few test samples), so thresholds are set with a one-sample margin."
+}

@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -19,10 +20,11 @@ from . import __version__
 from .config import LIMITS, PROJECT_ROOT, cases_dir, data_dir
 from .attacks import ExperimentTimeout
 from .evidence import EvidenceStore, ExperimentNotFound
-from .experiments import SCENARIOS, EngineBusy, ExperimentEngine, InvalidExperiment
+from .experiments import SCENARIOS, EngineBusy, EvidenceIntegrityError, ExperimentEngine, InvalidExperiment
 from .models import MODELS
 from .owasp import CATEGORIES, TAXONOMY_NAME, TAXONOMY_URL, TAXONOMY_VERSION
 from .regression import load_cases, run_suite
+from .poisoning.schemas import PoisonAttackRequest, PoisonBaselineRequest, PoisonDefendRequest
 from .schemas import AttackRequest, BaselineRequest, BoundaryRequest, DefendRequest
 
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
@@ -64,6 +66,11 @@ def create_app(root: Path | None = None, cases: Path | None = None,
     @app.exception_handler(InvalidExperiment)
     async def _inv(_: Request, exc: InvalidExperiment):
         return JSONResponse({"detail": str(exc)}, 422)
+
+    @app.exception_handler(EvidenceIntegrityError)
+    async def _integrity(_: Request, exc: EvidenceIntegrityError):
+        # 409: the stored evidence conflicts with its own fingerprints; nothing was executed.
+        return JSONResponse({"detail": str(exc), "integrity": exc.report}, 409)
 
     @app.exception_handler(EngineBusy)
     async def _busy(_: Request, exc: EngineBusy):
@@ -116,6 +123,27 @@ def create_app(root: Path | None = None, cases: Path | None = None,
     @app.post("/api/experiments/defend")
     def run_defend(req: DefendRequest):
         return engine.run_defend(req).model_dump(mode="json")
+
+    # ------------------------------------------------- ML02 data poisoning
+    @app.post("/api/experiments/poisoning/baseline")
+    def poisoning_baseline(req: PoisonBaselineRequest):
+        return engine.poisoning.run_baseline(req).model_dump(mode="json")
+
+    @app.post("/api/experiments/poisoning/attack")
+    def poisoning_attack(req: PoisonAttackRequest):
+        return engine.poisoning.run_attack(req).model_dump(mode="json")
+
+    @app.post("/api/experiments/poisoning/defend")
+    def poisoning_defend(req: PoisonDefendRequest):
+        return engine.poisoning.run_defend(req).model_dump(mode="json")
+
+    @app.get("/api/experiments/{experiment_id}/boundary")
+    def experiment_boundary(experiment_id: str,
+                            model: Literal["clean", "poisoned", "defended", "clean_sanitized"] = "clean",
+                            resolution: int = Query(80, ge=20, le=LIMITS.max_grid_resolution)):
+        """Decision boundary of a model of a stored ML02 experiment, retrained from the record's own labels
+        and checked against the recorded artifact hash."""
+        return engine.poisoning.boundary(experiment_id, model, resolution)
 
     @app.get("/api/experiments")
     def list_experiments():

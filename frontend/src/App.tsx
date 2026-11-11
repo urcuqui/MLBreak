@@ -1,23 +1,30 @@
-import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { lastLab } from "./components/LabSwitcher";
 import { Dashboard } from "./pages/Dashboard";
 import { Evidence } from "./pages/Evidence";
 import { ExperimentDetail } from "./pages/ExperimentDetail";
 import { Experiments } from "./pages/Experiments";
 import { Owasp } from "./pages/Owasp";
+import { PoisoningWorkspace } from "./pages/PoisoningWorkspace";
 import { Regression } from "./pages/Regression";
 import { Workspace } from "./pages/Workspace";
 
-const NAV = [
-  { to: "/", label: "Dashboard", end: true },
-  { to: "/owasp", label: "OWASP ML Top 10" },
-  { to: "/experiments", label: "Experiments" },
-  { to: "/lab/ml01/attack", label: "Attack Lab", match: ["baseline", "attack"] },
-  { to: "/lab/ml01/defend", label: "Defense Lab" },
-  { to: "/evidence", label: "Evidence & Reports" },
-  { to: "/regression", label: "Security Regression" },
-];
+function nav(lab: string) {
+  return [
+    { to: "/", label: "Dashboard", end: true },
+    { to: "/owasp", label: "OWASP ML Top 10" },
+    { to: "/experiments", label: "Experiments" },
+    { to: `/lab/${lab}/attack`, label: "Attack Lab" },
+    { to: `/lab/${lab}/defend`, label: "Defense Lab" },
+    { to: "/evidence", label: "Evidence & Reports" },
+    { to: "/regression", label: "Security Regression" },
+  ];
+}
 
 export function App() {
+  // The lab in the URL wins (the switcher stores it during the same render); otherwise the last-used lab.
+  const { pathname } = useLocation();
+  const NAV = nav(/^\/lab\/(ml0[12])\b/.exec(pathname)?.[1] ?? lastLab());
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -37,6 +44,8 @@ export function App() {
           <Route path="/experiments/:id" element={<ExperimentDetail />} />
           <Route path="/lab/ml01" element={<Navigate to="/lab/ml01/baseline" replace />} />
           <Route path="/lab/ml01/:tab" element={<Workspace />} />
+          <Route path="/lab/ml02" element={<Navigate to="/lab/ml02/baseline" replace />} />
+          <Route path="/lab/ml02/:tab" element={<PoisoningWorkspace />} />
           <Route path="/evidence" element={<Evidence />} />
           <Route path="/regression" element={<Regression />} />
           <Route path="*" element={<div className="page"><h1>Not found</h1></div>} />

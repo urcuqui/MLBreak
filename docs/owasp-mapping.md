@@ -7,7 +7,7 @@ Taxonomy: **OWASP Machine Learning Security Top 10, 2023 edition**
 | ID | Name | MLBreak status | Scenario |
 |---|---|---|---|
 | ML01:2023 | Input Manipulation Attack | **Implemented** | `ml01-moons-evasion` |
-| ML02:2023 | Data Poisoning Attack | Not implemented | — |
+| ML02:2023 | Data Poisoning Attack | **Implemented** | `ml02-moons-label-flip` |
 | ML03:2023 | Model Inversion Attack | Not implemented | — |
 | ML04:2023 | Membership Inference Attack | Not implemented | — |
 | ML05:2023 | Model Theft | Not implemented | — |
@@ -16,6 +16,20 @@ Taxonomy: **OWASP Machine Learning Security Top 10, 2023 edition**
 | ML08:2023 | Model Skewing | Not implemented | — |
 | ML09:2023 | Output Integrity Attack | Not implemented | — |
 | ML10:2023 | Model Poisoning | Not implemented | — |
+
+A category is marked implemented only when it has a registered scenario, passing acceptance tests and
+at least one passing security regression case. `tests/test_regression.py` enforces this.
+
+## ML02 coverage
+
+| OWASP ML02 element | MLBreak |
+|---|---|
+| Attacker manipulates training data so the model behaves as intended | Label flipping of a bounded fraction of the training set, then retraining |
+| Untargeted (availability) vs targeted poisoning | `random` vs `targeted` (one class; `random` or `boundary` row selection) |
+| Prevention: data validation and verification of training labels | kNN label sanitisation (relabel or remove suspicious labels), evaluated by defensive replay |
+| Prevention: separating and monitoring training data sources | Not modelled (out of scope; see [ml02-data-poisoning.md](ml02-data-poisoning.md#6-limitations)) |
+
+Details: [ml02-data-poisoning.md](ml02-data-poisoning.md).
 
 ## ML01 coverage
 

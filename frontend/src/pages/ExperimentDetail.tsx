@@ -3,11 +3,13 @@ import { useParams } from "react-router-dom";
 import { api, evidenceLinks } from "../api";
 import { BoundaryPlot } from "../components/BoundaryPlot";
 import { Badge, ErrorBox, EvalBadge, ExpLink, Panel, RatioView, StatusBadge, Tile } from "../components/ui";
-import type { BoundaryResponse, DatasetResponse, ExperimentRecord, ReplayResult } from "../types";
+import type { BoundaryResponse, DatasetResponse, ExperimentRecord, PoisoningRecord, ReplayResult } from "../types";
+import { PoisoningDetail } from "./PoisoningDetail";
 
 export function ExperimentDetail() {
   const { id = "" } = useParams();
   const [rec, setRec] = useState<ExperimentRecord | null>(null);
+  const [poisoning, setPoisoning] = useState<PoisoningRecord | null>(null);
   const [dataset, setDataset] = useState<DatasetResponse | null>(null);
   const [boundary, setBoundary] = useState<BoundaryResponse | null>(null);
   const [replay, setReplay] = useState<ReplayResult | null>(null);
@@ -15,8 +17,10 @@ export function ExperimentDetail() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setRec(null); setReplay(null); setError(null);
-    api.experiment(id).then((r) => {
+    setRec(null); setPoisoning(null); setReplay(null); setError(null);
+    api.anyExperiment(id).then((any) => {
+      if ((any as PoisoningRecord).family === "poisoning") { setPoisoning(any as PoisoningRecord); return; }
+      const r = any as ExperimentRecord;
       setRec(r);
       const ctx = { model_id: r.model.model_id, seed: r.seed };
       api.dataset(ctx).then(setDataset).catch(() => {});
@@ -29,6 +33,7 @@ export function ExperimentDetail() {
     try { setReplay(await api.replay(id)); } catch (e) { setError(String((e as Error).message ?? e)); } finally { setBusy(false); }
   };
 
+  if (poisoning) return <PoisoningDetail key={poisoning.experiment_id} rec={poisoning} />;
   if (!rec) return <div className="page"><ErrorBox error={error} />{!error && <p className="muted">Loading…</p>}</div>;
   const m = rec.metrics, links = evidenceLinks(rec.experiment_id);
   return (

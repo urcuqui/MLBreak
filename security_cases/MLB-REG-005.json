@@ -1,0 +1,27 @@
+{
+  "id": "MLB-REG-005",
+  "family": "poisoning",
+  "title": "kNN label sanitisation repairs random label flipping",
+  "owasp_id": "ML02:2023",
+  "seed": 7,
+  "poison": {"strategy": "random", "fraction": 0.2},
+  "defense": {"kind": "knn_label_sanitization", "k": 10, "agreement_threshold": 0.5, "action": "relabel"},
+  "invariants": [
+    {"id": "poisoning-still-harmful", "kind": "attack_canary", "posture": "undefended",
+     "metric": "test_accuracy", "op": "<=", "value": 0.95,
+     "description": "Retraining on 20% randomly flipped labels must still lower test accuracy (clean model: 96.7%); otherwise the case no longer exercises the attack."},
+    {"id": "flips-detected", "kind": "security", "posture": "defended",
+     "metric": "detection_recall", "op": ">=", "value": 0.80,
+     "description": "At least 80% of the randomly flipped training labels must be flagged as suspicious."},
+    {"id": "accuracy-restored", "kind": "security", "posture": "defended",
+     "metric": "test_accuracy", "op": ">=", "value": 0.94,
+     "description": "The model retrained on the sanitised labels must reach ≥ 94% test accuracy."},
+    {"id": "low-false-positives", "kind": "utility", "posture": "defended",
+     "metric": "false_positive_rate", "op": "<=", "value": 0.10,
+     "description": "At most 10% of the clean (unpoisoned) training labels may be flagged."},
+    {"id": "no-cost-without-attack", "kind": "utility", "posture": "defended",
+     "metric": "clean_data_test_accuracy", "op": ">=", "value": 0.95,
+     "description": "Applying the same sanitisation to the CLEAN labels must keep test accuracy ≥ 95%."}
+  ],
+  "rationale": "Random label noise is spread uniformly, so a flipped label usually disagrees with its neighbours: the case where kNN sanitisation is expected to work."
+}

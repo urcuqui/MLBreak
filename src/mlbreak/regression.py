@@ -1,7 +1,10 @@
 """Security regression: declared defensive invariants checked against real runs.
 
 A case (``security_cases/MLB-REG-*.json``) pins an attack, a defense and a set
-of invariants. Each invariant names a *posture* and a metric:
+of invariants. ML01 cases (``owasp_id: ML01:2023``) pin an evasion attack; ML02
+cases (``owasp_id: ML02:2023``, ``family: poisoning``) pin a label-flipping attack
+and a label-validation defense, evaluated by defensive replay of the exact
+poisoned training set. Each invariant names a *posture* and a metric:
 
 * ``undefended`` — the attack against the intentionally vulnerable model. An
   ``attack_canary`` invariant here proves the case still exercises a real
@@ -29,6 +32,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .config import LIMITS
 from .experiments import EngineBusy, ExperimentEngine
+from .poisoning.metrics import INVARIANT_METRICS as POISONING_METRICS
+from .poisoning.schemas import KnnLabelSanitization, LabelFlipConfig, PoisonAttackRequest, PoisonDefendRequest
 from .schemas import AttackConfig, AttackRequest, DefendRequest, DefenseConfig, SampleSelection
 
 _OPS = {"<=": operator.le, ">=": operator.ge, "<": operator.lt, ">": operator.gt, "==": operator.eq}
@@ -64,8 +69,46 @@ class SecurityCase(BaseModel):
     rationale: str
 
 
-def load_cases(directory: Path) -> list[SecurityCase]:
-    return [SecurityCase.model_validate_json(p.read_text()) for p in sorted(directory.glob("MLB-REG-*.json"))]
+class PoisoningInvariant(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    kind: Literal["security", "utility", "attack_canary"]
+    posture: Literal["undefended", "defended"]
+    metric: Literal[POISONING_METRICS]  # type: ignore[valid-type]
+    op: Literal["<=", ">=", "<", ">", "=="]
+    value: float = Field(ge=0, le=1)
+    description: str
+
+
+class PoisoningCase(BaseModel):
+    """ML02 case: ``undefended`` = the poisoning attack record, ``defended`` = its defensive replay."""
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(pattern=r"^MLB-REG-\d{3}$")
+    family: Literal["poisoning"] = "poisoning"
+    title: str
+    owasp_id: Literal["ML02:2023"]
+    scenario_id: Literal["ml02-moons-label-flip"] = "ml02-moons-label-flip"
+    model_id: Literal["mlp-tanh-16x16", "logreg"] = "mlp-tanh-16x16"
+    seed: int = 7
+    poison: LabelFlipConfig
+    defense: KnnLabelSanitization
+    defended_evaluation: Literal["replay"] = "replay"
+    invariants: list[PoisoningInvariant] = Field(min_length=1)
+    rationale: str
+
+
+AnyCase = SecurityCase | PoisoningCase
+
+
+def parse_case(text: str) -> AnyCase:
+    data = json.loads(text)
+    if data.get("owasp_id") == "ML02:2023" or data.get("family") == "poisoning":
+        return PoisoningCase.model_validate(data)
+    return SecurityCase.model_validate(data)
+
+
+def load_cases(directory: Path) -> list[AnyCase]:
+    return [parse_case(p.read_text()) for p in sorted(directory.glob("MLB-REG-*.json"))]
 
 
 def _metric(record, name: str) -> float | None:
@@ -73,19 +116,7 @@ def _metric(record, name: str) -> float | None:
     return None if m is None else m.get("value")
 
 
-def run_case(engine: ExperimentEngine, case: SecurityCase) -> dict[str, Any]:
-    attack_req = AttackRequest(scenario_id=case.scenario_id, model_id=case.model_id, seed=case.seed,
-                               attack=case.attack, samples=case.samples)
-    undefended = engine.run_attack(attack_req)
-    defended = None
-    if undefended.status == "completed":
-        if case.defended_evaluation == "replay":
-            defended = engine.run_defend(DefendRequest(parent_experiment_id=undefended.experiment_id,
-                                                       defense=case.defense))
-        else:
-            defended = engine.run_attack(attack_req.model_copy(update={
-                "target_defense": case.defense, "parent_experiment_id": undefended.experiment_id}))
-
+def _evaluate(case: AnyCase, undefended, defended) -> dict[str, Any]:
     results = []
     for inv in case.invariants:
         rec = undefended if inv.posture == "undefended" else defended
@@ -102,7 +133,36 @@ def run_case(engine: ExperimentEngine, case: SecurityCase) -> dict[str, Any]:
     }
 
 
-def _not_run(case: SecurityCase, reason: str) -> dict[str, Any]:
+def run_poisoning_case(engine: ExperimentEngine, case: PoisoningCase) -> dict[str, Any]:
+    lab = engine.poisoning
+    undefended = lab.run_attack(PoisonAttackRequest(scenario_id=case.scenario_id, model_id=case.model_id,
+                                                    seed=case.seed, poison=case.poison))
+    defended = None
+    if undefended.status == "completed":
+        defended = lab.run_defend(PoisonDefendRequest(parent_experiment_id=undefended.experiment_id,
+                                                      defense=case.defense))
+    return _evaluate(case, undefended, defended)
+
+
+def run_case(engine: ExperimentEngine, case: AnyCase) -> dict[str, Any]:
+    if isinstance(case, PoisoningCase):
+        return run_poisoning_case(engine, case)
+    attack_req = AttackRequest(scenario_id=case.scenario_id, model_id=case.model_id, seed=case.seed,
+                               attack=case.attack, samples=case.samples)
+    undefended = engine.run_attack(attack_req)
+    defended = None
+    if undefended.status == "completed":
+        if case.defended_evaluation == "replay":
+            defended = engine.run_defend(DefendRequest(parent_experiment_id=undefended.experiment_id,
+                                                       defense=case.defense))
+        else:
+            defended = engine.run_attack(attack_req.model_copy(update={
+                "target_defense": case.defense, "parent_experiment_id": undefended.experiment_id}))
+
+    return _evaluate(case, undefended, defended)
+
+
+def _not_run(case: AnyCase, reason: str) -> dict[str, Any]:
     """A case that could not be executed FAILS (never silently passes)."""
     return {"id": case.id, "title": case.title, "owasp_id": case.owasp_id,
             "defended_evaluation": case.defended_evaluation, "undefended_experiment_id": None,

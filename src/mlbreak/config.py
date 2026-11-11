@@ -34,9 +34,11 @@ class Limits:
     max_query_budget: int = 2000
     max_adv_training_rounds: int = 5
     max_grid_resolution: int = 150
-    # Wall-clock limit per experiment. Covers base-model training, adversarial training, attack loops and
-    # evaluation. Cooperative: checked between fits/rounds/steps/samples, so the worst-case overshoot is one
-    # scikit-learn fit (bounded by the model's max_iter and the fixed dataset size).
+    # Wall-clock limit per experiment. Covers base-model training, adversarial training, attack loops,
+    # poisoning retraining and evaluation. COOPERATIVE, not preemptive: the deadline is only checked between
+    # uninterruptible segments (fits, rounds, attack steps, samples). Overshoot is bounded by the longest
+    # segment that starts before the deadline (typically one scikit-learn fit) plus the short unchecked
+    # tail after the last check. See docs/reproducibility.md "Execution limits and timeouts".
     max_experiment_seconds: float = 60.0
     max_concurrent_experiments: int = 2
     # Wall-clock limit for a whole security regression suite (cases not started in time FAIL).

@@ -16,7 +16,10 @@ export function Dashboard() {
           <h1>Dashboard</h1>
           <p className="muted">Counts below come from stored evidence on this machine. Nothing here is sample data.</p>
         </div>
-        <Link className="btn primary" to="/lab/ml01/baseline">Open ML01 lab →</Link>
+        <div className="row gap wrap">
+          <Link className="btn primary" to="/lab/ml01/baseline">ML01 evasion lab →</Link>
+          <Link className="btn primary" to="/lab/ml02/baseline">ML02 poisoning lab →</Link>
+        </div>
       </div>
       <VulnerableBanner />
       <ErrorBox error={error} />
@@ -39,7 +42,8 @@ export function Dashboard() {
           <div className="grid-2">
             <Panel title="Recent experiments" actions={<Link to="/experiments">All experiments</Link>}>
               {d.recent.length === 0 ? (
-                <p className="muted">No experiments yet. Open the <Link to="/lab/ml01/baseline">ML01 lab</Link> and run a baseline.</p>
+                <p className="muted">No experiments yet. Open the <Link to="/lab/ml01/baseline">ML01</Link> or{" "}
+                  <Link to="/lab/ml02/baseline">ML02</Link> lab and run a baseline.</p>
               ) : (
                 <div className="table-wrap"><table className="table">
                   <thead><tr><th>Experiment</th><th>Type</th><th>Status</th><th>Defense</th><th>Attack success</th></tr></thead>
@@ -59,6 +63,8 @@ export function Dashboard() {
                 <li><Link to="/lab/ml01/attack"><strong>Attack</strong></Link> — craft bounded perturbations (white-box or black-box).</li>
                 <li><Link to="/lab/ml01/defend"><strong>Defend</strong></Link> — replay the perturbations against a control, then run an adaptive attack.</li>
                 <li><Link to="/lab/ml01/evidence"><strong>Evidence</strong></Link> — export JSON/Markdown and verify exact replay.</li>
+                <li><Link to="/lab/ml02/baseline"><strong>ML02 poisoning</strong></Link> — flip training labels, retrain, then replay
+                  the exact poisoned set through kNN label sanitisation.</li>
                 <li><Link to="/regression"><strong>Regression</strong></Link> — check declared defensive invariants.</li>
               </ol>
               {Object.keys(d.experiments_by_evaluation).length > 0 && (

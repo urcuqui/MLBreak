@@ -31,7 +31,8 @@ export function Owasp() {
             <p className="muted small">{c.summary}</p>
             <div className="row between mt">
               <a href={c.reference_url} target="_blank" rel="noreferrer noopener" className="small">OWASP reference ↗</a>
-              {c.lab_status === "implemented" && <Link className="btn small primary" to="/lab/ml01/baseline">Open lab</Link>}
+              {c.lab_status === "implemented" && (
+                <Link className="btn small primary" to={`/lab/${c.code.toLowerCase()}/baseline`}>Open lab</Link>)}
             </div>
           </article>
         ))}

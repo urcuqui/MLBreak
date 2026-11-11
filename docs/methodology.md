@@ -142,3 +142,16 @@ cannot have a parent. Incompatible requests return HTTP 422 with the reason.
 
 `MLB-REG-004` encodes a known limitation as a canary: confidence rejection is bypassed by an
 adaptive attacker.
+
+ML02 cases (`owasp_id: ML02:2023`) use the same invariant kinds. *undefended* is the poisoning experiment,
+and *defended* is its defensive replay:
+
+| Case | Pins |
+|---|---|
+| MLB-REG-005 | kNN sanitisation detects ≥ 80% of random flips and restores accuracy, at low clean-data cost |
+| MLB-REG-006 | sparse targeted flips are detected and targeted success is reduced |
+| MLB-REG-007 | known limitation: boundary-targeted flips are invisible to kNN (detection ≤ 20%, success stays ≥ 15%) |
+| MLB-REG-008 | known limitation: dense targeted flips make sanitisation relabel clean rows and do not restore the class |
+
+The ML02 methodology (threat model, metrics, evaluation assumptions) is in
+[ml02-data-poisoning.md](ml02-data-poisoning.md).

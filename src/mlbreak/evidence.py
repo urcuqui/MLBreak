@@ -11,7 +11,17 @@ from typing import Any
 
 import pandas as pd
 
+from .poisoning.schemas import PoisoningRecord
 from .schemas import EXPERIMENT_ID_PATTERN, ExperimentRecord
+
+AnyRecord = ExperimentRecord | PoisoningRecord
+
+
+def parse_record(data: dict[str, Any]) -> AnyRecord:
+    """Validate a stored record against the schema of its family (ML01 evasion or ML02 poisoning)."""
+    if data.get("family") == "poisoning" or str(data.get("schema_version", "")).startswith("mlbreak.poisoning/"):
+        return PoisoningRecord.model_validate(data)
+    return ExperimentRecord.model_validate(data)
 
 _ID_RE = re.compile(EXPERIMENT_ID_PATTERN)
 
@@ -40,19 +50,19 @@ class EvidenceStore:
     def md_path(self, experiment_id: str) -> Path:
         return self.dir / f"{_check_id(experiment_id)}.md"
 
-    def save(self, record: ExperimentRecord) -> None:
+    def save(self, record: AnyRecord) -> None:
         data = record.model_dump(mode="json")
         with self._lock:
             tmp = self.json_path(record.experiment_id).with_suffix(".json.tmp")
             tmp.write_text(json.dumps(data, indent=2))
             tmp.replace(self.json_path(record.experiment_id))
-            self.md_path(record.experiment_id).write_text(render_markdown(record))
+            self.md_path(record.experiment_id).write_text(render_any(record))
 
-    def load(self, experiment_id: str) -> ExperimentRecord:
+    def load(self, experiment_id: str) -> AnyRecord:
         path = self.json_path(experiment_id)
         if not path.is_file():
             raise ExperimentNotFound(experiment_id)
-        return ExperimentRecord.model_validate_json(path.read_text())
+        return parse_record(json.loads(path.read_text()))
 
     def markdown(self, experiment_id: str) -> str:
         path = self.md_path(experiment_id)
@@ -62,6 +72,8 @@ class EvidenceStore:
 
     def samples_csv(self, experiment_id: str) -> str:
         rec = self.load(experiment_id)
+        if isinstance(rec, PoisoningRecord):
+            return poisoning_csv(rec)
         rows = []
         for s in rec.samples:
             row = s.model_dump()
@@ -84,7 +96,32 @@ class EvidenceStore:
         return sorted(out, key=lambda r: r["created_at"], reverse=True)
 
 
+def poisoning_csv(rec: PoisoningRecord) -> str:
+    """One CSV with a ``split`` column: training rows (labels, flags) and test rows (predictions)."""
+    rows = []
+    for s in rec.training_samples:
+        d = s.model_dump()
+        d["x_0"], d["x_1"] = d.pop("x")
+        rows.append({"split": "train", "index": d.pop("train_index"), **d})
+    for s in rec.test_samples:
+        d = s.model_dump()
+        d["x_0"], d["x_1"] = d.pop("x")
+        rows.append({"split": "test", "index": d.pop("test_index"), **d})
+    buf = io.StringIO()
+    pd.DataFrame(rows).to_csv(buf, index=False)
+    return buf.getvalue()
+
+
+def render_any(rec: AnyRecord) -> str:
+    if isinstance(rec, PoisoningRecord):
+        from .poisoning.report import render_poisoning_markdown
+        return render_poisoning_markdown(rec)
+    return render_markdown(rec)
+
+
 def summarize(rec: dict[str, Any]) -> dict[str, Any]:
+    if rec.get("family") == "poisoning":
+        return _summarize_poisoning(rec)
     m = rec.get("metrics") or {}
     asr = m.get("attack_success_rate") or {}
     return {
@@ -95,6 +132,7 @@ def summarize(rec: dict[str, Any]) -> dict[str, Any]:
         "status": rec["status"],
         "scenario_id": rec["scenario_id"],
         "owasp_id": rec["owasp"]["id"],
+        "family": "evasion",
         "model_id": rec["model"].get("model_id"),
         "attack": (rec.get("attack_config") or {}).get("attack"),
         "epsilon": (rec.get("attack_config") or {}).get("epsilon"),
@@ -111,6 +149,31 @@ def summarize(rec: dict[str, Any]) -> dict[str, Any]:
         "replay_of": rec.get("replay_of"),
         "schema_version": rec.get("schema_version"),
         "error": rec.get("error"),
+    }
+
+
+def _summarize_poisoning(rec: dict[str, Any]) -> dict[str, Any]:
+    m = rec.get("metrics") or {}
+    asr = m.get("attack_success_rate") or {}
+    pc = rec.get("poison_config") or {}
+    attack = None
+    if pc:
+        attack = f"label_flip:{pc['strategy']}" + (f"/{pc['selection']}" if pc["strategy"] == "targeted" else "")
+    return {
+        "experiment_id": rec["experiment_id"], "created_at": rec["created_at"], "mode": rec["mode"],
+        "evaluation": rec["evaluation"], "status": rec["status"], "scenario_id": rec["scenario_id"],
+        "owasp_id": rec["owasp"]["id"], "family": "poisoning", "model_id": rec["model"].get("model_id"),
+        "attack": attack, "epsilon": None, "norm": None,
+        "poison_fraction": pc.get("fraction"), "target_class": pc.get("target_class"),
+        "defense": (rec.get("defense_config") or {}).get("kind"),
+        "n_samples": len(rec.get("test_samples") or []),
+        # Accuracy of the evaluated model on the CLEAN test inputs (poisoning acts through training only).
+        "clean_accuracy": (m.get("test_accuracy") or {}).get("value"),
+        "adversarial_accuracy": None, "robust_accuracy": None, "abstention_rate_adversarial": None,
+        "attack_success_rate": asr.get("value"),
+        "attack_success": f"{asr['numerator']}/{asr['denominator']}" if asr else None,
+        "parent_experiment_id": rec.get("parent_experiment_id"), "replay_of": rec.get("replay_of"),
+        "schema_version": rec.get("schema_version"), "error": rec.get("error"),
     }
 
 
