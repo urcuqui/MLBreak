@@ -1,0 +1,18 @@
+{
+  "id": "MLB-REG-002",
+  "title": "Adversarial training reduces adaptive white-box PGD success",
+  "owasp_id": "ML01:2023",
+  "seed": 7,
+  "attack": {"attack": "pgd", "norm": "linf", "epsilon": 0.3, "steps": 40},
+  "defense": {"kind": "adversarial_training", "epsilon": 0.2, "norm": "linf", "steps": 20, "rounds": 3},
+  "defended_evaluation": "adaptive",
+  "invariants": [
+    {"id": "attack-still-effective", "kind": "attack_canary", "posture": "undefended",
+     "metric": "attack_success_rate", "op": ">=", "value": 0.30,
+     "description": "PGD L∞ ε=0.3 must still evade the undefended model."},
+    {"id": "adaptive-success-reduced", "kind": "security", "posture": "defended",
+     "metric": "attack_success_rate", "op": "<=", "value": 0.30,
+     "description": "A new PGD attack using the defended model's gradients must succeed on at most 30% of correctly classified inputs. This is a reduction, not immunity."}
+  ],
+  "rationale": "Adaptive evaluation: the attacker has white-box access to the adversarially trained model."
+}

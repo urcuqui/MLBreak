@@ -1,0 +1,15 @@
+{
+  "id": "MLB-REG-004",
+  "title": "Known limitation: confidence rejection does not stop an adaptive attacker",
+  "owasp_id": "ML01:2023",
+  "seed": 7,
+  "attack": {"attack": "pgd", "norm": "linf", "epsilon": 0.3, "steps": 40},
+  "defense": {"kind": "confidence_rejection", "threshold": 0.8},
+  "defended_evaluation": "adaptive",
+  "invariants": [
+    {"id": "adaptive-bypass-observable", "kind": "attack_canary", "posture": "defended",
+     "metric": "attack_success_rate", "op": ">=", "value": 0.10,
+     "description": "An attacker who targets confidence above the threshold must still bypass rejection. If this drops to ~0, the adaptive attack has regressed — it does NOT mean the defense became robust."}
+  ],
+  "rationale": "Documents the gap between replay (MLB-REG-003) and adaptive evaluation, so the lab cannot silently start overstating this defense."
+}

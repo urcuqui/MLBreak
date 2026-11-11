@@ -1,0 +1,17 @@
+services:
+  mlbreak:
+    build: .
+    image: mlbreak:0.1.0
+    ports:
+      - "127.0.0.1:8000:8000"   # local-only: never publish this intentionally vulnerable lab publicly
+    volumes:
+      - mlbreak-data:/data
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    cpus: 2
+    pids_limit: 128
+volumes:
+  mlbreak-data:
