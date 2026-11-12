@@ -9,6 +9,8 @@ Pairing is per test sample, over the samples eligible in BOTH evaluations:
 
 * ML01 evasion: eligible = attack-eligible outcome (``evaded`` / ``abstained_adversarial`` /
   ``robust``); success = ``evaded``.
+* ML01 spam-filter (text) evasion: eligible = attacked messages (``evaded`` / ``failed`` /
+  ``budget_exhausted``); success = ``evaded`` (target class reached within every constraint).
 * ML02 poisoning: eligible = test samples of the attack's population (target class for targeted
   attacks, all test samples otherwise) that the CLEAN model classifies correctly; success = the
   evaluated model (poisoned / defended) misclassifies them.
@@ -45,6 +47,9 @@ def mcnemar_one_sided_p(b: int, c: int) -> float:
 
 def paired_success(record: Any) -> dict[int, bool]:
     """Map test_index → attack succeeded, over the samples eligible for the attack in this record."""
+    if getattr(record, "family", None) == "text_evasion":
+        return {s.test_index: s.outcome == "evaded" for s in record.samples
+                if s.outcome in ("evaded", "failed", "budget_exhausted")}
     if getattr(record, "family", None) == "poisoning":
         cfg = record.poison_config or {}
         target = cfg.get("target_class")

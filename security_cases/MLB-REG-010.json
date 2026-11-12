@@ -1,0 +1,63 @@
+{
+  "id": "MLB-REG-010",
+  "family": "text_evasion",
+  "title": "Spam filter: replayed character-level evasions are mostly undone by text normalisation",
+  "owasp_id": "ML01:2023",
+  "scenario_id": "ml01-spam-filter-evasion",
+  "model_id": "tfidf-word-logreg",
+  "seed": 7,
+  "attack": {
+    "attack": "deepwordbug_greedy",
+    "goal": "spam_to_ham"
+  },
+  "samples": {
+    "max_samples": 100
+  },
+  "defense": {
+    "kind": "text_normalization",
+    "unicode": true,
+    "leetspeak": true,
+    "spell_snap": true
+  },
+  "defended_evaluation": "replay",
+  "invariants": [
+    {
+      "id": "constrained-evasion-real",
+      "kind": "attack_canary",
+      "posture": "undefended",
+      "metric": "attack_success_rate",
+      "op": ">=",
+      "value": 0.15,
+      "description": "The default attack must still evade the undefended filter (observed 25/93 = 26.9%)."
+    },
+    {
+      "id": "evasions-respect-constraints",
+      "kind": "security",
+      "posture": "undefended",
+      "metric": "constraint_violation_rate",
+      "op": "<=",
+      "value": 0.0,
+      "description": "Every adversarial message must satisfy every declared text-preservation constraint (re-validated from the stored text and edit script)."
+    },
+    {
+      "id": "replay-blocked",
+      "kind": "security",
+      "posture": "defended",
+      "metric": "attack_success_rate",
+      "op": "<=",
+      "value": 0.1,
+      "description": "At most 10% of the replayed adversarial messages may still evade the normalising filter (observed 4/93 = 4.3%)."
+    },
+    {
+      "id": "replay-reduction-significant",
+      "kind": "security",
+      "posture": "paired",
+      "statistic": "mcnemar_p_value",
+      "metric": "attack_success_rate",
+      "op": "<=",
+      "value": 0.05,
+      "description": "The reduction on the same messages must be significant (observed McNemar p = 4.8e-7)."
+    }
+  ],
+  "rationale": "Non-adaptive replay. It overstates the defense: MLB-REG-009 shows a new attack against the normalising pipeline still succeeds on 17% of messages."
+}

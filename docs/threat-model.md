@@ -1,6 +1,7 @@
 # Threat model — ML01:2023 evasion lab
 
-The ML02:2023 data-poisoning threat model (label-source trust boundary, label-flipping capabilities) is in
+The ML01 spam-filter (text) evasion threat model is in
+[ml01-spam-filter-evasion.md](ml01-spam-filter-evasion.md#2-threat-model). The ML02:2023 data-poisoning threat model (label-source trust boundary, label-flipping capabilities) is in
 [ml02-data-poisoning.md](ml02-data-poisoning.md#2-threat-model).
 
 ## System under test

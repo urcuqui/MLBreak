@@ -41,6 +41,8 @@ from .experiments import EngineBusy, ExperimentEngine
 from .poisoning.metrics import INVARIANT_METRICS as POISONING_METRICS
 from .poisoning.schemas import KnnLabelSanitization, LabelFlipConfig, PoisonAttackRequest, PoisonDefendRequest
 from .stats import STATISTICS, paired_comparison
+from .text.metrics import INVARIANT_METRICS as TEXT_METRICS
+from .text.schemas import TextAttackConfig, TextAttackRequest, TextDefendRequest, TextDefense, TextSampleSelection
 from .schemas import AttackConfig, AttackRequest, DefendRequest, DefenseConfig, SampleSelection
 
 _OPS = {"<=": operator.le, ">=": operator.ge, "<": operator.lt, ">": operator.gt, "==": operator.eq}
@@ -116,11 +118,45 @@ class PoisoningCase(BaseModel):
     rationale: str
 
 
-AnyCase = SecurityCase | PoisoningCase
+class TextInvariant(_PairedMixin):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    kind: Literal["security", "utility", "attack_canary"]
+    posture: Literal["undefended", "defended", "paired"]
+    statistic: Literal[STATISTICS] | None = None  # type: ignore[valid-type]
+    metric: Literal[TEXT_METRICS]  # type: ignore[valid-type]
+    op: Literal["<=", ">=", "<", ">", "=="]
+    value: float = Field(ge=0, le=1)
+    description: str
+
+
+class TextCase(BaseModel):
+    """ML01 spam-filter evasion case: ``undefended`` = the attack on the undefended filter, ``defended`` = its
+    replay against the defense or a NEW adaptive attack with the same configuration (same messages, same
+    text-preservation constraints, same effort)."""
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(pattern=r"^MLB-REG-\d{3}$")
+    family: Literal["text_evasion"] = "text_evasion"
+    title: str
+    owasp_id: Literal["ML01:2023"]
+    scenario_id: Literal["ml01-spam-filter-evasion"] = "ml01-spam-filter-evasion"
+    model_id: Literal["tfidf-word-logreg", "tfidf-word-nb"] = "tfidf-word-logreg"
+    seed: int = 7
+    attack: TextAttackConfig
+    samples: TextSampleSelection = Field(default_factory=TextSampleSelection)
+    defense: TextDefense
+    defended_evaluation: Literal["replay", "adaptive"]
+    invariants: list[TextInvariant] = Field(min_length=1)
+    rationale: str
+
+
+AnyCase = SecurityCase | PoisoningCase | TextCase
 
 
 def parse_case(text: str) -> AnyCase:
     data = json.loads(text)
+    if data.get("family") == "text_evasion":
+        return TextCase.model_validate(data)
     if data.get("owasp_id") == "ML02:2023" or data.get("family") == "poisoning":
         return PoisoningCase.model_validate(data)
     return SecurityCase.model_validate(data)
@@ -174,7 +210,25 @@ def run_poisoning_case(engine: ExperimentEngine, case: PoisoningCase) -> dict[st
     return _evaluate(case, undefended, defended)
 
 
+def run_text_case(engine: ExperimentEngine, case: TextCase) -> dict[str, Any]:
+    lab = engine.text
+    req = TextAttackRequest(scenario_id=case.scenario_id, model_id=case.model_id, seed=case.seed,
+                            attack=case.attack, samples=case.samples)
+    undefended = lab.run_attack(req)
+    defended = None
+    if undefended.status == "completed":
+        if case.defended_evaluation == "replay":
+            defended = lab.run_defend(TextDefendRequest(parent_experiment_id=undefended.experiment_id,
+                                                        defense=case.defense))
+        else:
+            defended = lab.run_attack(req.model_copy(update={"target_defense": case.defense,
+                                                             "parent_experiment_id": undefended.experiment_id}))
+    return _evaluate(case, undefended, defended)
+
+
 def run_case(engine: ExperimentEngine, case: AnyCase) -> dict[str, Any]:
+    if isinstance(case, TextCase):
+        return run_text_case(engine, case)
     if isinstance(case, PoisoningCase):
         return run_poisoning_case(engine, case)
     attack_req = AttackRequest(scenario_id=case.scenario_id, model_id=case.model_id, seed=case.seed,

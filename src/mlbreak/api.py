@@ -25,6 +25,8 @@ from .models import MODELS
 from .owasp import CATEGORIES, TAXONOMY_NAME, TAXONOMY_URL, TAXONOMY_VERSION
 from .regression import load_cases, run_suite
 from .poisoning.schemas import PoisonAttackRequest, PoisonBaselineRequest, PoisonDefendRequest
+from .text.schemas import (ModelId as TextModelId, TextAttackRequest, TextBaselineRequest, TextClassifyRequest,
+                           TextDefendRequest)
 from .schemas import AttackRequest, BaselineRequest, BoundaryRequest, DefendRequest
 
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
@@ -136,6 +138,31 @@ def create_app(root: Path | None = None, cases: Path | None = None,
     @app.post("/api/experiments/poisoning/defend")
     def poisoning_defend(req: PoisonDefendRequest):
         return engine.poisoning.run_defend(req).model_dump(mode="json")
+
+    # ------------------------------------------- ML01 spam-filter evasion
+    @app.post("/api/experiments/text/baseline")
+    def text_baseline(req: TextBaselineRequest):
+        return engine.text.run_baseline(req).model_dump(mode="json")
+
+    @app.post("/api/experiments/text/attack")
+    def text_attack(req: TextAttackRequest):
+        return engine.text.run_attack(req).model_dump(mode="json")
+
+    @app.post("/api/experiments/text/defend")
+    def text_defend(req: TextDefendRequest):
+        return engine.text.run_defend(req).model_dump(mode="json")
+
+    @app.post("/api/text/classify")
+    def text_classify(req: TextClassifyRequest):
+        """Classify one message with the bundled (optionally defended) spam filter. Not stored as evidence."""
+        return engine.text.classify(req)
+
+    @app.get("/api/text/messages")
+    def text_messages(model_id: TextModelId = "tfidf-word-logreg", seed: int = Query(7, ge=0, lt=2**31),
+                      label: int | None = Query(None, ge=0, le=1, description="0 = ham, 1 = spam"),
+                      limit: int = Query(100, ge=1, le=LIMITS.max_text_samples)):
+        """Held-out test messages with the undefended filter's predictions (to choose what to attack)."""
+        return engine.text.test_messages(model_id, seed, label, limit)
 
     @app.get("/api/experiments/{experiment_id}/boundary")
     def experiment_boundary(experiment_id: str,

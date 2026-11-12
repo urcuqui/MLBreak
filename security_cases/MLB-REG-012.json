@@ -1,0 +1,86 @@
+{
+  "id": "MLB-REG-012",
+  "family": "text_evasion",
+  "title": "Spam filter: adversarial data augmentation significantly reduces an adaptive attacker",
+  "owasp_id": "ML01:2023",
+  "scenario_id": "ml01-spam-filter-evasion",
+  "model_id": "tfidf-word-logreg",
+  "seed": 7,
+  "attack": {
+    "attack": "deepwordbug_greedy",
+    "goal": "spam_to_ham",
+    "max_edits_per_word": 2,
+    "query_budget": 400
+  },
+  "samples": {
+    "max_samples": 100
+  },
+  "defense": {
+    "kind": "text_adversarial_training",
+    "max_train_samples": 300,
+    "query_budget": 100,
+    "candidates_per_word": 6,
+    "max_edit_distance": 10,
+    "max_char_ratio": 0.15
+  },
+  "defended_evaluation": "adaptive",
+  "invariants": [
+    {
+      "id": "constrained-evasion-real",
+      "kind": "attack_canary",
+      "posture": "undefended",
+      "metric": "attack_success_rate",
+      "op": ">=",
+      "value": 0.15,
+      "description": "The stronger-effort attack must still evade the undefended filter (observed 27/93 = 29.0%)."
+    },
+    {
+      "id": "evasions-respect-constraints",
+      "kind": "security",
+      "posture": "undefended",
+      "metric": "constraint_violation_rate",
+      "op": "<=",
+      "value": 0.0,
+      "description": "Every adversarial message must satisfy every declared text-preservation constraint (re-validated from the stored text and edit script)."
+    },
+    {
+      "id": "adaptive-reduction-significant",
+      "kind": "security",
+      "posture": "paired",
+      "statistic": "mcnemar_p_value",
+      "metric": "attack_success_rate",
+      "op": "<=",
+      "value": 0.05,
+      "description": "On the same messages, a NEW attack against the augmented model must succeed significantly less often (observed McNemar p = 1.7e-3)."
+    },
+    {
+      "id": "adaptive-absolute-reduction",
+      "kind": "security",
+      "posture": "paired",
+      "statistic": "absolute_reduction",
+      "metric": "attack_success_rate",
+      "op": ">=",
+      "value": 0.05,
+      "description": "Augmentation must remove at least 5 percentage points of adaptive success (observed 12.1 pp)."
+    },
+    {
+      "id": "spam-recall-kept",
+      "kind": "utility",
+      "posture": "defended",
+      "metric": "spam_recall",
+      "op": ">=",
+      "value": 0.88,
+      "description": "Augmentation must keep clean spam recall ≥ 88% (observed 117/128 = 91.4%)."
+    },
+    {
+      "id": "ham-fpr-kept",
+      "kind": "utility",
+      "posture": "defended",
+      "metric": "ham_false_positive_rate",
+      "op": "<=",
+      "value": 0.01,
+      "description": "Augmentation must keep the clean ham false-positive rate ≤ 1% (observed 5/904 = 0.55%)."
+    }
+  ],
+  "rationale": "Adversarial examples are generated from TRAINING spam only (300 messages, undefended model) and added with label spam; the held-out test messages are never seen during training."
+}

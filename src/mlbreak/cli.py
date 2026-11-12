@@ -10,6 +10,8 @@ from .config import cases_dir, data_dir
 from .evidence import EvidenceStore
 from .experiments import EvidenceIntegrityError, ExperimentEngine
 from .regression import run_suite
+from .text.schemas import (TextAdversarialTrainingDefense, TextAttackConfig, TextAttackRequest, TextBaselineRequest,
+                           TextClassifyRequest, TextDefendRequest, TextNormalizationDefense, TextSampleSelection)
 from .poisoning.schemas import (KnnLabelSanitization, LabelFlipConfig, PoisonAttackRequest, PoisonBaselineRequest,
                                 PoisonDefendRequest)
 from .schemas import (AdversarialTrainingDefense, AttackConfig, AttackRequest, BaselineRequest,
@@ -215,20 +217,98 @@ def _demo_ml02(eng) -> tuple[list, bool]:
     return recs, ok
 
 
+_TEXT_KEYS = ("clean_accuracy", "spam_recall", "ham_false_positive_rate", "attack_success_rate",
+              "accuracy_under_attack", "budget_exhaustion_rate", "constraint_violation_rate")
+
+
+def _print_text(rec) -> None:
+    print(f"  {rec.experiment_id}  ML01-spam mode={rec.mode} evaluation={rec.evaluation} status={rec.status}")
+    if rec.error:
+        print(f"    error: {rec.error}")
+    for key in _TEXT_KEYS:
+        if key in rec.metrics:
+            print(f"    {key:<26} {_pct(rec.metrics[key])}")
+    ex = next((x for x in rec.samples if x.outcome == "evaded"), None)
+    if ex is not None:
+        from .text.report import visible
+        print(f"    example  {visible(ex.text_original)[:90]!r}\n          → {visible(ex.text_adversarial)[:90]!r}"
+              f"  (P(spam) {ex.p_spam_original:.3f}→{ex.p_spam_adversarial:.3f}, {ex.queries} queries, "
+              f"edit distance {ex.edit_distance})")
+
+
+def _text_defense(args):
+    if args.defense == "text_normalization":
+        return TextNormalizationDefense(spell_snap=not args.no_spell_snap)
+    if args.defense == "text_adversarial_training":
+        return TextAdversarialTrainingDefense()
+    return None
+
+
+def cmd_text(args) -> int:
+    lab = _engine().text
+    if args.text_cmd == "classify":
+        r = lab.classify(TextClassifyRequest(model_id=args.model, seed=args.seed, text=args.message,
+                                             defense=_text_defense(args)))
+        print(json.dumps({k: r[k] for k in ("label", "p_spam", "p_ham", "normalized_text")}, indent=2))
+        return 0
+    if args.text_cmd == "baseline":
+        rec = lab.run_baseline(TextBaselineRequest(model_id=args.model, seed=args.seed, defense=_text_defense(args)))
+    elif args.text_cmd == "attack":
+        cfg = TextAttackConfig(goal=args.goal, query_budget=args.queries, max_edit_distance=args.max_edits,
+                               max_char_ratio=args.max_char_ratio, charsets=args.charsets.split(","),
+                               operations=args.operations.split(","), max_edits_per_word=args.edits_per_word)
+        rec = lab.run_attack(TextAttackRequest(model_id=args.model, seed=args.seed, attack=cfg,
+                                               samples=TextSampleSelection(max_samples=args.samples),
+                                               target_defense=_text_defense(args), parent_experiment_id=args.parent))
+    else:
+        rec = lab.run_defend(TextDefendRequest(parent_experiment_id=args.parent, defense=_text_defense(args)))
+    _print_text(rec)
+    return 0 if rec.status == "completed" else 1
+
+
+def _demo_text(eng) -> tuple[list, bool]:
+    lab, recs = eng.text, []
+
+    def show(rec):
+        recs.append(rec)
+        _print_text(rec)
+        return rec
+
+    print("ML01-spam-1) Clean evaluation of the bundled TF-IDF + logistic-regression spam filter")
+    show(lab.run_baseline(TextBaselineRequest()))
+    print("\nML01-spam-2) DeepWordBug-style attack (spam → ham, ≤ 10 edits, ≤ 15% of characters, numbers protected)")
+    atk = show(lab.run_attack(TextAttackRequest()))
+    for i, d in enumerate((TextNormalizationDefense(), TextAdversarialTrainingDefense()), start=3):
+        print(f"\nML01-spam-{i}a) Replay against {d.kind} (non-adaptive)")
+        show(lab.run_defend(TextDefendRequest(parent_experiment_id=atk.experiment_id, defense=d)))
+        print(f"ML01-spam-{i}b) Adaptive attack against {d.kind} (new search through the defended pipeline)")
+        show(lab.run_attack(TextAttackRequest(target_defense=d, parent_experiment_id=atk.experiment_id)))
+    print("\nML01-spam-5) Invisible-character insertion, then replay against Unicode normalisation")
+    inv = show(lab.run_attack(TextAttackRequest(attack=TextAttackConfig(operations=["insert"], charsets=["invisible"]))))
+    show(lab.run_defend(TextDefendRequest(parent_experiment_id=inv.experiment_id,
+                                          defense=TextNormalizationDefense(leetspeak=False, spell_snap=False))))
+    r = eng.replay(atk.experiment_id)
+    print(f"\nML01-spam-6) Exact replay of {atk.experiment_id}: identical={r['identical']}")
+    return recs, r["identical"]
+
+
 def cmd_demo(args) -> int:
     eng = _engine()
-    if args.lab in ("ml02", "all"):
-        recs, ok = _demo_ml02(eng)
+    labs = {"ml01": ["ml01"], "ml01-spam": ["ml01-spam"], "ml02": ["ml02"], "all": ["ml01", "ml01-spam", "ml02"]}[args.lab]
+    status = 0
+    for k, lab in enumerate(labs):
+        if k:
+            print("\n" + "=" * 72 + "\n")
+        if lab == "ml01":
+            status |= _demo_ml01(eng)
+            continue
+        recs, ok = (_demo_text if lab == "ml01-spam" else _demo_ml02)(eng)
         integrity = [eng.verify(r.experiment_id) for r in recs]
-        print("\nML02 evidence integrity:", ", ".join(f"{i['experiment_id']}={'ok' if i['ok'] else 'FAILED'}"
-                                                  for i in integrity))
-        ok &= all(i["ok"] for i in integrity)
-        if args.lab == "ml02":
-            print(f"\nEvidence written to {eng.store.dir}")
-            return 0 if ok else 1
-        print("\n" + "=" * 72 + "\n")
-        return min(1, (0 if ok else 1) + _demo_ml01(eng))
-    return _demo_ml01(eng)
+        print(f"\n{lab.upper()} evidence integrity:", ", ".join(
+            f"{i['experiment_id']}={'ok' if i['ok'] else 'FAILED'}" for i in integrity))
+        status |= 0 if ok and all(i["ok"] for i in integrity) else 1
+    print(f"\nEvidence written to {eng.store.dir}")
+    return status
 
 
 def _demo_ml01(eng) -> int:
@@ -335,6 +415,40 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("verify", help="run the security regression suite (non-zero exit on failure)")
     s.set_defaults(fn=cmd_verify)
 
+    s = sub.add_parser("text", help="ML01 spam-filter evasion: classify | baseline | attack | defend")
+    tsub = s.add_subparsers(dest="text_cmd", required=True)
+
+    def text_common(ts, defense=True):
+        ts.add_argument("--model", default="tfidf-word-logreg", choices=["tfidf-word-logreg", "tfidf-word-nb"])
+        ts.add_argument("--seed", type=int, default=7)
+        if defense:
+            ts.add_argument("--defense", choices=["text_normalization", "text_adversarial_training"])
+            ts.add_argument("--no-spell-snap", action="store_true", help="normalisation without spell snapping")
+    ts = tsub.add_parser("classify", help="classify one message")
+    ts.add_argument("message")
+    text_common(ts)
+    ts.set_defaults(fn=cmd_text)
+    ts = tsub.add_parser("baseline", help="clean evaluation (optionally of a defended system)")
+    text_common(ts)
+    ts.set_defaults(fn=cmd_text)
+    ts = tsub.add_parser("attack", help="character-level attack; with --defense this is an ADAPTIVE attack")
+    text_common(ts)
+    ts.add_argument("--goal", default="spam_to_ham", choices=["spam_to_ham", "ham_to_spam"])
+    ts.add_argument("--queries", type=int, default=200)
+    ts.add_argument("--max-edits", type=int, default=10)
+    ts.add_argument("--max-char-ratio", type=float, default=0.15)
+    ts.add_argument("--edits-per-word", type=int, default=1)
+    ts.add_argument("--operations", default="swap,substitute,delete,insert")
+    ts.add_argument("--charsets", default="ascii_letters", help="comma list of ascii_letters,confusables,invisible")
+    ts.add_argument("--samples", type=int, default=100)
+    ts.add_argument("--parent")
+    ts.set_defaults(fn=cmd_text)
+    ts = tsub.add_parser("defend", help="replay an attack's adversarial messages against a defense")
+    ts.add_argument("parent")
+    ts.add_argument("--defense", required=True, choices=["text_normalization", "text_adversarial_training"])
+    ts.add_argument("--no-spell-snap", action="store_true")
+    ts.set_defaults(fn=cmd_text)
+
     s = sub.add_parser("poison", help="ML02 data poisoning: baseline | attack | defend")
     psub = s.add_subparsers(dest="poison_cmd", required=True)
     for name, hlp in (("baseline", "train on clean labels"), ("attack", "flip training labels and retrain")):
@@ -355,7 +469,7 @@ def build_parser() -> argparse.ArgumentParser:
     ps.set_defaults(fn=cmd_poison)
 
     s = sub.add_parser("demo", help="run the full Baseline → Attack → Defend → Replay walkthrough")
-    s.add_argument("--lab", default="ml01", choices=["ml01", "ml02", "all"])
+    s.add_argument("--lab", default="ml01", choices=["ml01", "ml01-spam", "ml02", "all"])
     s.set_defaults(fn=cmd_demo)
     return p
 

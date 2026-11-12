@@ -31,7 +31,9 @@ export function Experiments() {
               <td><ExpLink id={e.experiment_id} /></td><td className="mono small">{e.created_at.slice(0, 19).replace("T", " ")}</td>
               <td><EvalBadge evaluation={e.evaluation} /></td><td><StatusBadge status={e.status} /></td>
               <td className="mono small">{e.model_id}</td>
-              <td className="small">{!e.attack ? "—" : e.family === "poisoning"
+              <td className="small">{!e.attack ? "—" : e.family === "text_evasion"
+                ? `${e.attack} · ≤ ${e.max_edit_distance} edits · ${e.query_budget} queries`
+                : e.family === "poisoning"
                 ? `${e.attack} · ${Math.round((e.poison_fraction ?? 0) * 100)}%${e.target_class != null ? ` · class ${e.target_class}` : ""}`
                 : `${e.attack} · ${e.norm} · ε=${e.epsilon}`}</td>
               <td className="small">{e.defense ?? "—"}</td>

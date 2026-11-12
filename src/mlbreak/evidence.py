@@ -12,13 +12,16 @@ from typing import Any
 import pandas as pd
 
 from .poisoning.schemas import PoisoningRecord
+from .text.schemas import TextEvasionRecord
 from .schemas import EXPERIMENT_ID_PATTERN, ExperimentRecord
 
-AnyRecord = ExperimentRecord | PoisoningRecord
+AnyRecord = ExperimentRecord | PoisoningRecord | TextEvasionRecord
 
 
 def parse_record(data: dict[str, Any]) -> AnyRecord:
-    """Validate a stored record against the schema of its family (ML01 evasion or ML02 poisoning)."""
+    """Validate a stored record against the schema of its family (ML01 2-D / text evasion, ML02 poisoning)."""
+    if data.get("family") == "text_evasion" or str(data.get("schema_version", "")).startswith("mlbreak.text-evasion/"):
+        return TextEvasionRecord.model_validate(data)
     if data.get("family") == "poisoning" or str(data.get("schema_version", "")).startswith("mlbreak.poisoning/"):
         return PoisoningRecord.model_validate(data)
     return ExperimentRecord.model_validate(data)
@@ -74,6 +77,8 @@ class EvidenceStore:
         rec = self.load(experiment_id)
         if isinstance(rec, PoisoningRecord):
             return poisoning_csv(rec)
+        if isinstance(rec, TextEvasionRecord):
+            return text_csv(rec)
         rows = []
         for s in rec.samples:
             row = s.model_dump()
@@ -112,7 +117,23 @@ def poisoning_csv(rec: PoisoningRecord) -> str:
     return buf.getvalue()
 
 
+def text_csv(rec: TextEvasionRecord) -> str:
+    """One row per selected message: texts, predictions, queries, edit distance, outcome and constraint checks."""
+    rows = []
+    for s in rec.samples:
+        d = s.model_dump(exclude={"edits", "constraints"})
+        d["edits"] = "; ".join(f"{e.op}:{e.word_before}->{e.word_after}" for e in (s.edits or []))
+        d["constraints_ok"] = None if s.constraints is None else all(s.constraints.values())
+        rows.append(d)
+    buf = io.StringIO()
+    pd.DataFrame(rows).to_csv(buf, index=False)
+    return buf.getvalue()
+
+
 def render_any(rec: AnyRecord) -> str:
+    if isinstance(rec, TextEvasionRecord):
+        from .text.report import render_text_markdown
+        return render_text_markdown(rec)
     if isinstance(rec, PoisoningRecord):
         from .poisoning.report import render_poisoning_markdown
         return render_poisoning_markdown(rec)
@@ -122,6 +143,8 @@ def render_any(rec: AnyRecord) -> str:
 def summarize(rec: dict[str, Any]) -> dict[str, Any]:
     if rec.get("family") == "poisoning":
         return _summarize_poisoning(rec)
+    if rec.get("family") == "text_evasion":
+        return _summarize_text(rec)
     m = rec.get("metrics") or {}
     asr = m.get("attack_success_rate") or {}
     return {
@@ -149,6 +172,28 @@ def summarize(rec: dict[str, Any]) -> dict[str, Any]:
         "replay_of": rec.get("replay_of"),
         "schema_version": rec.get("schema_version"),
         "error": rec.get("error"),
+    }
+
+
+def _summarize_text(rec: dict[str, Any]) -> dict[str, Any]:
+    m = rec.get("metrics") or {}
+    asr = m.get("attack_success_rate") or {}
+    ac = rec.get("attack_config") or {}
+    return {
+        "experiment_id": rec["experiment_id"], "created_at": rec["created_at"], "mode": rec["mode"],
+        "evaluation": rec["evaluation"], "status": rec["status"], "scenario_id": rec["scenario_id"],
+        "owasp_id": rec["owasp"]["id"], "family": "text_evasion", "model_id": rec["model"].get("model_id"),
+        "attack": f"deepwordbug:{ac['goal']}" if ac else None, "epsilon": None, "norm": None,
+        "max_edit_distance": ac.get("max_edit_distance"), "query_budget": ac.get("query_budget"),
+        "defense": (rec.get("defense_config") or {}).get("kind"),
+        "n_samples": len(rec.get("samples") or []),
+        "clean_accuracy": (m.get("clean_accuracy") or {}).get("value"),
+        "adversarial_accuracy": (m.get("accuracy_under_attack") or {}).get("value"),
+        "robust_accuracy": None, "abstention_rate_adversarial": None,
+        "attack_success_rate": asr.get("value"),
+        "attack_success": f"{asr['numerator']}/{asr['denominator']}" if asr else None,
+        "parent_experiment_id": rec.get("parent_experiment_id"), "replay_of": rec.get("replay_of"),
+        "schema_version": rec.get("schema_version"), "error": rec.get("error"),
     }
 
 

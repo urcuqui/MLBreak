@@ -12,12 +12,36 @@ regression-testing traditional ML models — organised around the
 
 | OWASP category | Lab |
 |---|---|
-| **ML01:2023 Input Manipulation Attack** | ✅ implemented: evasion of a 2-D classifier |
+| **ML01:2023 Input Manipulation Attack** | ✅ implemented, **two scenarios**: 2-D classifier evasion, and spam-filter evasion with character-level adversarial text |
 | **ML02:2023 Data Poisoning Attack** | ✅ implemented: label flipping with retraining, kNN label sanitisation |
 | ML03–ML10:2023 | registry metadata only. **No lab, no placeholder attacks.** |
 
 The first release is a working vertical slice, not a scaffold. Every metric in the UI, CLI and
 reports comes from an experiment that actually ran.
+
+## What the ML01 spam-filter scenario does
+
+A second ML01 scenario ([docs/ml01-spam-filter-evasion.md](docs/ml01-spam-filter-evasion.md)), selected in the
+Attack Lab with **ML01 scenario → Spam Filter Evasion**. A TF-IDF + logistic-regression (or naive-Bayes) spam
+filter is trained in-process on the bundled **SMS Spam Collection** (CC BY 4.0, de-duplicated before a seeded
+stratified split). It is attacked with a **DeepWordBug-style** black-box search (swap, substitute, delete or
+insert characters) under explicit constraints: edit distance, altered-character ratio, modified-word ratio,
+protected numbers/URLs and function words, and a per-message query budget enforced by a counting oracle. A label
+change only counts as an evasion if every constraint holds. Defenses are text normalisation (Unicode, leetspeak,
+spell-snap to the training vocabulary) and adversarial data augmentation from training spam, each evaluated by
+replay and by a fresh adaptive attack.
+
+| Seed 7, 93 attackable held-out spam (logistic regression) | Attack success |
+|---|---|
+| Undefended, default constraints | 25/93 = 26.9% |
+| … if phone numbers may be corrupted | 53/93 = 57.0% |
+| Normalisation: replay → adaptive (2 edits/word, 400 queries) | 4/93 → 16/93 |
+| Augmentation: replay → adaptive | 5/91 → 14/91 |
+| Invisible zero-width insertion → Unicode normalisation | 41/93 → 0/93 |
+
+The design follows the SpamShieldAI red-team notebook (BERT + TextAttack `DeepWordBugGao2018` on 10 messages),
+re-implemented for traditional ML with tighter constraints. Its historical results are illustrative and are
+not used as thresholds.
 
 ## What the ML02 lab does
 
@@ -117,6 +141,8 @@ flowchart LR
 | `src/mlbreak/evidence.py` | Evidence store and Markdown report |
 | `src/mlbreak/regression.py` | Security regression runner |
 | `src/mlbreak/api.py`, `cli.py` | Web API and command line |
+| `src/mlbreak/text/` | ML01 spam-filter evasion: bundled corpus, TF-IDF models, DeepWordBug-style attack, normalisation, augmentation, metrics, integrity |
+| `src/mlbreak/poisoning/` | ML02 data poisoning: label flipping, kNN sanitisation, metrics, integrity |
 | `frontend/` | React + TypeScript UI |
 | `security_cases/` | Declared defensive invariants |
 
@@ -169,6 +195,7 @@ UI development with hot reload: `make run` in one shell, `make dev` in another (
 make test           # pytest: unit + integration + API + regression + static security checks
 make verify         # security regression gate, non-zero exit on failure
 make demo           # ML01: Baseline → Attack → Defend (replay) → Adaptive → Black-box → exact replay
+PYTHONPATH=src .venv/bin/python -m mlbreak demo --lab ml01-spam   # ML01 spam filter: attack → replay/adaptive per defense
 PYTHONPATH=src .venv/bin/python -m mlbreak demo --lab ml02   # ML02: clean → poison → defensive replay → replay
 PYTHONPATH=src .venv/bin/python -m mlbreak demo --lab all
 ```
@@ -181,6 +208,10 @@ mlbreak attack --attack pgd --norm linf --epsilon 0.3 --steps 40
 mlbreak attack --attack random_search --queries 500
 mlbreak defend <ATTACK_ID> --defense adversarial_training          # replay
 mlbreak attack --defense adversarial_training --parent <ATTACK_ID>  # adaptive (same ε, norm and samples as the parent)
+mlbreak text classify "WINNER! Claim your prize, call 09061701461"
+mlbreak text attack --samples 100 [--max-edits 10] [--operations insert --charsets invisible]
+mlbreak text defend <ATTACK_ID> --defense text_normalization|text_adversarial_training
+mlbreak text attack --defense text_normalization --parent <ATTACK_ID> --edits-per-word 2 --queries 400   # adaptive
 mlbreak poison baseline [--model logreg] [--seed 7]
 mlbreak poison attack --strategy random --fraction 0.2
 mlbreak poison attack --strategy targeted --target-class 1 --fraction 0.1 --selection boundary
@@ -210,6 +241,7 @@ Evidence is written to `var/experiments/` (override with `MLBREAK_DATA_DIR`).
 
 ## Documentation
 
+* [ML01 spam-filter evasion: reference analysis, threat model, constraints, defenses, limitations](docs/ml01-spam-filter-evasion.md)
 * [ML02 data poisoning: threat model, metrics, assumptions, limitations](docs/ml02-data-poisoning.md)
 * [Threat model](docs/threat-model.md)
 * [Experimental methodology](docs/methodology.md)

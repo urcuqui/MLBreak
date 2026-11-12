@@ -58,7 +58,8 @@ export interface ExperimentSummary {
   scenario_id: string; owasp_id: string; model_id: string; attack: string | null; epsilon: number | null;
   norm: string | null; defense: string | null; n_samples: number; clean_accuracy: number | null;
   attack_success_rate: number | null; attack_success: string | null; parent_experiment_id: string | null;
-  replay_of: string | null; error: string | null; family?: "evasion" | "poisoning";
+  replay_of: string | null; error: string | null; family?: "evasion" | "poisoning" | "text_evasion";
+  max_edit_distance?: number | null; query_budget?: number | null;
   poison_fraction?: number | null; target_class?: number | null;
 }
 
@@ -186,6 +187,12 @@ export interface PoisoningMetrics {
   detection_counts?: Record<string, number>;
 }
 
+export interface TextCase {
+  id: string; family: "text_evasion"; title: string; owasp_id: string; model_id: string;
+  attack: TextAttackConfig; defense: TextDefense; defended_evaluation: "replay" | "adaptive";
+  invariants: Invariant[]; rationale: string;
+}
+
 export interface PoisoningCase {
   id: string; family: "poisoning"; title: string; owasp_id: string; poison: LabelFlipConfig; defense: KnnDefense;
   defended_evaluation: "replay"; invariants: Invariant[]; rationale: string;
@@ -194,4 +201,72 @@ export interface PoisoningCase {
 export interface VerifyReport {
   experiment_id: string; ok: boolean; guarantee: string;
   checks: { check: string; status: "pass" | "fail" | "skipped"; detail: string }[];
+}
+
+// ---------------------------------------------------------------------------
+// ML01 spam-filter evasion (character-level adversarial text)
+// ---------------------------------------------------------------------------
+export type TextOp = "swap" | "substitute" | "delete" | "insert";
+export type TextCharset = "ascii_letters" | "confusables" | "invisible";
+export type TextModelId = "tfidf-word-logreg" | "tfidf-word-nb";
+
+export interface TextAttackConfig {
+  attack: "deepwordbug_greedy"; goal: "spam_to_ham" | "ham_to_spam"; min_target_confidence: number;
+  operations: TextOp[]; charsets: TextCharset[]; query_budget: number; max_edit_distance: number;
+  max_char_ratio: number; max_modified_word_ratio: number; max_edits_per_word: number; candidates_per_word: number;
+  protect_numbers: boolean; protect_stopwords: boolean; min_word_length: number;
+}
+
+export type TextDefense =
+  | { kind: "text_normalization"; unicode: boolean; leetspeak: boolean; spell_snap: boolean; spell_min_count: number }
+  | { kind: "text_adversarial_training"; max_train_samples: number; query_budget: number; candidates_per_word: number;
+      max_edit_distance: number; max_char_ratio: number };
+
+export interface TextEdit {
+  word_index: number; op: TextOp; position: number; char_before: string | null; char_after: string | null;
+  word_before: string; word_after: string;
+}
+
+export type TextOutcome = "evaded" | "failed" | "budget_exhausted" | "skipped_misclassified" | "not_perturbed";
+
+export interface TextSample {
+  test_index: number; y_true: number; text_original: string; pred_original: number; p_spam_original: number;
+  text_adversarial: string | null; pred_adversarial: number | null; p_spam_adversarial: number | null;
+  queries: number | null; edit_distance: number | null; char_ratio: number | null;
+  words_modifiable: number | null; words_modified: number | null; edits: TextEdit[] | null;
+  constraints: Record<string, boolean> | null; outcome: TextOutcome;
+}
+
+export interface TextMetrics {
+  [key: string]: unknown;
+  clean_accuracy: Ratio; spam_recall: Ratio; spam_precision: Ratio; ham_false_positive_rate: Ratio;
+  clean_accuracy_selected?: Ratio; attack_success_rate?: Ratio; accuracy_under_attack?: Ratio;
+  budget_exhaustion_rate?: Ratio; constraint_violation_rate?: Ratio;
+  outcomes?: { n_selected: number; attacked: number; counts: Record<TextOutcome, number> };
+  effort?: { mean_queries_attacked: number | null; mean_queries_evaded: number | null; max_queries: number;
+    mean_edit_distance_evaded: number | null; mean_char_ratio_evaded: number | null;
+    mean_modified_word_ratio_evaded: number | null };
+  comparison?: Record<string, { undefended: Ratio | null; defended: Ratio | null }>;
+}
+
+export interface TextRecord {
+  schema_version: string; family: "text_evasion"; experiment_id: string; created_at: string;
+  mode: "baseline" | "attack" | "defend"; evaluation: "clean" | "attack" | "adaptive_attack" | "replay";
+  status: "completed" | "failed"; error: string | null; intentionally_vulnerable: boolean; scenario_id: string;
+  owasp: { id: string; name: string; taxonomy: string; taxonomy_version: string; reference_url: string };
+  attacker_capabilities: Record<string, unknown> | null;
+  model: Record<string, unknown> & { model_id: string; estimator: string; artifact_sha256: string;
+    tfidf: Record<string, unknown>; n_train: number };
+  target_system: Record<string, unknown> & { defense: TextDefense | null; model_artifact_sha256: string | null };
+  dataset: Record<string, unknown> & { dataset_id: string; split_id: string; train_sha256: string; test_sha256: string };
+  seed: number; attack_config: TextAttackConfig | null; defense_config: TextDefense | null;
+  parent_experiment_id: string | null; replay_of: string | null; lineage: Record<string, unknown> | null;
+  request: Record<string, unknown>; metrics: TextMetrics; samples: TextSample[];
+  reproducibility: Record<string, unknown>; duration_ms: number;
+}
+
+export interface TextMessage { test_index: number; text: string; y_true: number; p_spam: number; pred: number }
+
+export interface ClassifyResult {
+  text: string; normalized_text: string | null; p_spam: number; p_ham: number; prediction: number; label: string;
 }

@@ -1,7 +1,8 @@
 # Limitations
 
-This page covers the ML01 evasion lab and the platform. The ML02 data-poisoning lab's limitations are in
-[ml02-data-poisoning.md](ml02-data-poisoning.md#6-limitations).
+This page covers the ML01 2-D evasion lab and the platform. Scenario-specific limitations:
+[ML01 spam-filter evasion](ml01-spam-filter-evasion.md#7-limitations) and
+[ML02 data poisoning](ml02-data-poisoning.md#6-limitations).
 
 ## ML01 evasion lab and platform
 

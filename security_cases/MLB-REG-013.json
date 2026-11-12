@@ -1,0 +1,54 @@
+{
+  "id": "MLB-REG-013",
+  "family": "text_evasion",
+  "title": "Known limitation: for naive Bayes, text normalisation does not stop an adaptive attacker",
+  "owasp_id": "ML01:2023",
+  "scenario_id": "ml01-spam-filter-evasion",
+  "model_id": "tfidf-word-nb",
+  "seed": 7,
+  "attack": {
+    "attack": "deepwordbug_greedy",
+    "goal": "spam_to_ham"
+  },
+  "samples": {
+    "max_samples": 100
+  },
+  "defense": {
+    "kind": "text_normalization",
+    "unicode": true,
+    "leetspeak": true,
+    "spell_snap": true
+  },
+  "defended_evaluation": "adaptive",
+  "invariants": [
+    {
+      "id": "evasion-real",
+      "kind": "attack_canary",
+      "posture": "undefended",
+      "metric": "attack_success_rate",
+      "op": ">=",
+      "value": 0.1,
+      "description": "The default attack must still evade the undefended naive-Bayes filter (observed 17/86 = 19.8%)."
+    },
+    {
+      "id": "adaptive-bypass-observable",
+      "kind": "attack_canary",
+      "posture": "defended",
+      "metric": "attack_success_rate",
+      "op": ">=",
+      "value": 0.1,
+      "description": "A NEW attack against the normalising naive-Bayes filter must still succeed on ≥ 10% (observed 14/86 = 16.3%), although replay suggests 3.5%."
+    },
+    {
+      "id": "no-significant-reduction",
+      "kind": "attack_canary",
+      "posture": "paired",
+      "statistic": "mcnemar_p_value",
+      "metric": "attack_success_rate",
+      "op": ">=",
+      "value": 0.05,
+      "description": "The adaptive reduction must NOT be significant (observed McNemar p = 0.25). If it becomes significant, check whether the attack regressed before concluding the defense improved."
+    }
+  ],
+  "rationale": "Same defense, different model: replay against normalising naive Bayes drops success from 17 to 3 of 86, but an adaptive attacker gets 14 of 86. A defense result does not transfer between classifiers, and replay overstates robustness."
+}

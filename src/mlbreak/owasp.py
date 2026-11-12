@@ -51,7 +51,7 @@ CATEGORIES: tuple[OwaspCategory, ...] = (
         "An attacker deliberately alters model inputs at inference time so the "
         "model produces an incorrect output (adversarial examples / evasion).",
         lab_status="implemented",
-        scenario_ids=["ml01-moons-evasion"],
+        scenario_ids=["ml01-moons-evasion", "ml01-spam-filter-evasion"],
     ),
     _cat(2, "Data Poisoning Attack", "Data_Poisoning_Attack",
          "Training data is manipulated so the trained model behaves as the attacker intends.",

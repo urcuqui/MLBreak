@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } f
 import { Link, NavLink, useParams } from "react-router-dom";
 import { api, evidenceLinks, type Ctx } from "../api";
 import { BoundaryPlot, CLASS_COLORS } from "../components/BoundaryPlot";
-import { LabSwitcher } from "../components/LabSwitcher";
+import { LabSwitcher, ScenarioSwitcher } from "../components/LabSwitcher";
 import { Badge, ErrorBox, EvalBadge, ExpLink, Panel, RatioView, StatusBadge, Tile, VulnerableBanner } from "../components/ui";
 import type { AttackConfig, BoundaryResponse, DatasetResponse, Defense, ExperimentRecord, ReplayResult, SampleResult } from "../types";
 
@@ -133,7 +133,8 @@ export function Workspace() {
           </p>
         </div>
         <div className="ctx-controls">
-          <LabSwitcher current="ml01" tab={tab} />
+          <LabSwitcher current="ml01" tab={tab} path="ml01" />
+          <ScenarioSwitcher current="ml01" tab={tab} />
           <label>Model
             <select value={ctx.model_id} onChange={(e) => changeCtx({ ...ctx, model_id: e.target.value })}>
               <option value="mlp-tanh-16x16">MLP tanh 16×16</option>

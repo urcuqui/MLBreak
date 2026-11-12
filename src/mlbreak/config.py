@@ -41,6 +41,10 @@ class Limits:
     # tail after the last check. See docs/reproducibility.md "Execution limits and timeouts".
     max_experiment_seconds: float = 60.0
     max_concurrent_experiments: int = 2
+    # ML01 spam-filter (text) evasion
+    max_text_query_budget: int = 1000      # model queries per attacked message
+    max_text_samples: int = 300            # messages attacked per experiment
+    max_text_length: int = 2000            # characters in a free-text classify request
     # Wall-clock limit for a whole security regression suite (cases not started in time FAIL).
     max_regression_seconds: float = 600.0
 

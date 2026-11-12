@@ -1,5 +1,5 @@
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
-import { lastLab } from "./components/LabSwitcher";
+import { labPathOf, lastLab } from "./components/LabSwitcher";
 import { Dashboard } from "./pages/Dashboard";
 import { Evidence } from "./pages/Evidence";
 import { ExperimentDetail } from "./pages/ExperimentDetail";
@@ -7,6 +7,7 @@ import { Experiments } from "./pages/Experiments";
 import { Owasp } from "./pages/Owasp";
 import { PoisoningWorkspace } from "./pages/PoisoningWorkspace";
 import { Regression } from "./pages/Regression";
+import { SpamWorkspace } from "./pages/SpamWorkspace";
 import { Workspace } from "./pages/Workspace";
 
 function nav(lab: string) {
@@ -24,7 +25,7 @@ function nav(lab: string) {
 export function App() {
   // The lab in the URL wins (the switcher stores it during the same render); otherwise the last-used lab.
   const { pathname } = useLocation();
-  const NAV = nav(/^\/lab\/(ml0[12])\b/.exec(pathname)?.[1] ?? lastLab());
+  const NAV = nav(labPathOf(pathname) ?? lastLab());
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -43,6 +44,8 @@ export function App() {
           <Route path="/experiments" element={<Experiments />} />
           <Route path="/experiments/:id" element={<ExperimentDetail />} />
           <Route path="/lab/ml01" element={<Navigate to="/lab/ml01/baseline" replace />} />
+          <Route path="/lab/ml01/spam" element={<Navigate to="/lab/ml01/spam/baseline" replace />} />
+          <Route path="/lab/ml01/spam/:tab" element={<SpamWorkspace />} />
           <Route path="/lab/ml01/:tab" element={<Workspace />} />
           <Route path="/lab/ml02" element={<Navigate to="/lab/ml02/baseline" replace />} />
           <Route path="/lab/ml02/:tab" element={<PoisoningWorkspace />} />

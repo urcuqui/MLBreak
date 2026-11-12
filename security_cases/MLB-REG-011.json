@@ -1,0 +1,69 @@
+{
+  "id": "MLB-REG-011",
+  "family": "text_evasion",
+  "title": "Spam filter: Unicode normalisation neutralises invisible-character insertion",
+  "owasp_id": "ML01:2023",
+  "scenario_id": "ml01-spam-filter-evasion",
+  "model_id": "tfidf-word-logreg",
+  "seed": 7,
+  "attack": {
+    "attack": "deepwordbug_greedy",
+    "goal": "spam_to_ham",
+    "operations": [
+      "insert"
+    ],
+    "charsets": [
+      "invisible"
+    ]
+  },
+  "samples": {
+    "max_samples": 100
+  },
+  "defense": {
+    "kind": "text_normalization",
+    "unicode": true,
+    "leetspeak": false,
+    "spell_snap": false
+  },
+  "defended_evaluation": "adaptive",
+  "invariants": [
+    {
+      "id": "invisible-evasion-real",
+      "kind": "attack_canary",
+      "posture": "undefended",
+      "metric": "attack_success_rate",
+      "op": ">=",
+      "value": 0.3,
+      "description": "Inserting zero-width characters (the rendered message is visually unchanged) must still evade the undefended filter (observed 41/93 = 44.1%)."
+    },
+    {
+      "id": "evasions-respect-constraints",
+      "kind": "security",
+      "posture": "undefended",
+      "metric": "constraint_violation_rate",
+      "op": "<=",
+      "value": 0.0,
+      "description": "Every adversarial message must satisfy every declared text-preservation constraint (re-validated from the stored text and edit script)."
+    },
+    {
+      "id": "invisible-neutralised",
+      "kind": "security",
+      "posture": "defended",
+      "metric": "attack_success_rate",
+      "op": "<=",
+      "value": 0.0,
+      "description": "A NEW attack restricted to invisible characters must not evade a filter that strips format characters (observed 0/93)."
+    },
+    {
+      "id": "reduction-significant",
+      "kind": "security",
+      "posture": "paired",
+      "statistic": "mcnemar_p_value",
+      "metric": "attack_success_rate",
+      "op": "<=",
+      "value": 0.05,
+      "description": "The reduction on the same messages must be significant."
+    }
+  ],
+  "rationale": "The unicode step removes every character the 'invisible' charset can produce, so no search within that charset can succeed. The claim is scoped: it says nothing about ASCII edits (see MLB-REG-009/010)."
+}

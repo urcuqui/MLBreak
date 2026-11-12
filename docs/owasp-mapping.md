@@ -6,7 +6,7 @@ Taxonomy: **OWASP Machine Learning Security Top 10, 2023 edition**
 
 | ID | Name | MLBreak status | Scenario |
 |---|---|---|---|
-| ML01:2023 | Input Manipulation Attack | **Implemented** | `ml01-moons-evasion` |
+| ML01:2023 | Input Manipulation Attack | **Implemented** (2 scenarios) | `ml01-moons-evasion` (2-D numerical evasion), `ml01-spam-filter-evasion` (character-level text evasion) |
 | ML02:2023 | Data Poisoning Attack | **Implemented** | `ml02-moons-label-flip` |
 | ML03:2023 | Model Inversion Attack | Not implemented | — |
 | ML04:2023 | Membership Inference Attack | Not implemented | — |
@@ -40,6 +40,18 @@ Details: [ml02-data-poisoning.md](ml02-data-poisoning.md).
 | Prevention: adversarial training | `adversarial_training` defense, evaluated by replay and adaptive attack |
 | Prevention: robust models / detection of anomalous inputs | `confidence_rejection` (a simple abstention control; shown to be bypassable adaptively) |
 | Input validation | Feature-domain constraint enforced for all inputs |
+
+ML01 has **two working scenarios**:
+
+| Scenario | Input | Attacks | Defenses | Details |
+|---|---|---|---|---|
+| `ml01-moons-evasion` | 2 numerical features | FGSM, PGD (white-box), random search (black-box) | adversarial training, confidence rejection | [methodology.md](methodology.md) |
+| `ml01-spam-filter-evasion` | SMS text, TF-IDF | DeepWordBug-style character edits (black-box, score-based), optional homoglyph / zero-width charsets | text normalisation, adversarial data augmentation | [ml01-spam-filter-evasion.md](ml01-spam-filter-evasion.md) |
+
+For the spam scenario, the OWASP ML01 elements map as follows: the attacker manipulates *message text* at
+inference time; adversarial examples are character-level edits under explicit text-preservation constraints;
+"input validation" is text normalisation (Unicode, leetspeak, spell-snap); "adversarial training" is data
+augmentation with adversarial training spam.
 
 Each category entry has the same metadata contract (`id`, `code`, `name`, `summary`,
 `reference_url`, `taxonomy_version`, `lab_status`, `scenario_ids`). A category moves to

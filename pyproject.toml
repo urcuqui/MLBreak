@@ -27,7 +27,7 @@ mlbreak = "mlbreak.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-mlbreak = ["py.typed"]
+mlbreak = ["py.typed", "text/data/sms_spam_collection/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

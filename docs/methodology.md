@@ -173,5 +173,18 @@ and *defended* is its defensive replay:
 | MLB-REG-007 | known limitation: boundary-targeted flips are invisible to kNN (detection ≤ 20%, success stays ≥ 15%) |
 | MLB-REG-008 | known limitation: dense targeted flips make sanitisation relabel clean rows and do not restore the class |
 
+ML01 spam-filter cases (`family: text_evasion`) use the same invariant kinds; *undefended* is the attack on the
+undefended filter and *defended* its replay or a new adaptive attack:
+
+| Case | Pins |
+|---|---|
+| MLB-REG-009 | normalisation significantly reduces a stronger-effort adaptive attacker (paired McNemar, ≥ 5 pp), with utility kept |
+| MLB-REG-010 | normalisation blocks replayed adversarial messages (and why replay alone overstates it) |
+| MLB-REG-011 | Unicode normalisation neutralises invisible-character insertion, adaptively |
+| MLB-REG-012 | adversarial data augmentation significantly reduces a stronger-effort adaptive attacker |
+| MLB-REG-013 | known limitation: for naive Bayes, normalisation does not significantly reduce an adaptive attacker |
+
+Every text case also asserts `constraint_violation_rate ≤ 0`: no recorded evasion violates a declared constraint.
+
 The ML02 methodology (threat model, metrics, evaluation assumptions) is in
 [ml02-data-poisoning.md](ml02-data-poisoning.md).

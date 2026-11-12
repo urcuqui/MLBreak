@@ -79,6 +79,18 @@ SCENARIOS: dict[str, Scenario] = {
             "within an Lp budget ε so the deployed system returns the wrong class."
         ),
     ),
+    "ml01-spam-filter-evasion": Scenario(
+        scenario_id="ml01-spam-filter-evasion",
+        title="Spam-filter evasion with character-level adversarial text",
+        owasp_id="ML01:2023",
+        dataset_id="sms-spam-collection-v1",
+        intentionally_vulnerable=True,
+        description=(
+            "A TF-IDF + logistic-regression spam filter trained on the bundled SMS Spam Collection is evaded at "
+            "inference time by a DeepWordBug-style black-box search that swaps, substitutes, deletes or inserts "
+            "characters within explicit edit-distance and text-preservation constraints."
+        ),
+    ),
     "ml02-moons-label-flip": Scenario(
         scenario_id="ml02-moons-label-flip",
         title="Label-flipping poisoning of the training set, with retraining",
@@ -92,6 +104,18 @@ SCENARIOS: dict[str, Scenario] = {
         ),
     ),
 }
+
+
+def verify_any_record(rec) -> dict[str, Any]:
+    """Record-level integrity check, dispatched on the record family (ML01 2-D, ML01 text, ML02)."""
+    family = getattr(rec, "family", None)
+    if family == "text_evasion":
+        from .text.integrity import verify_text_record
+        return verify_text_record(rec)
+    if family == "poisoning":
+        from .poisoning.integrity import verify_poisoning_record
+        return verify_poisoning_record(rec)
+    return verify_record(rec)
 
 
 class EngineBusy(RuntimeError):
@@ -257,6 +281,9 @@ class ExperimentEngine:
         # ML02 data-poisoning lab: shares this engine's gate, deadline and store; own records and metrics.
         from .poisoning.engine import PoisoningLab
         self.poisoning = PoisoningLab(self)
+        # ML01 spam-filter (text) evasion: same gate/deadline/store; own records and metrics.
+        from .text.engine import TextLab
+        self.text = TextLab(self)
 
     # ------------------------------------------------------------------ API
     def run_baseline(self, req: BaselineRequest, replay_of: str | None = None) -> ExperimentRecord:
@@ -279,11 +306,7 @@ class ExperimentEngine:
 
     def verify_full(self, rec) -> dict[str, Any]:
         """Record-level integrity (dispatched on the record family) + lineage integrity."""
-        if isinstance(rec, ExperimentRecord):
-            report = verify_record(rec)
-        else:
-            from .poisoning.integrity import verify_poisoning_record
-            report = verify_poisoning_record(rec)
+        report = verify_any_record(rec)
         lineage = self._lineage_check(rec)
         if lineage is not None:
             report["checks"].append(lineage)
@@ -314,11 +337,7 @@ class ExperimentEngine:
             parent = self.store.load(rec.parent_experiment_id)
         except ExperimentNotFound:
             return _check("lineage", False, f"parent {rec.parent_experiment_id} not found")
-        if isinstance(parent, ExperimentRecord):
-            parent_report = verify_record(parent)
-        else:
-            from .poisoning.integrity import verify_poisoning_record
-            parent_report = verify_poisoning_record(parent)
+        parent_report = verify_any_record(parent)
         pr = parent.reproducibility
         mismatched = [k for k, pk in (("parent_config_sha256", "config_sha256"), ("parent_results_sha256", "results_sha256"),
                                      ("parent_record_sha256", "record_sha256")) if lin.get(k) != pr.get(pk)]
@@ -340,6 +359,8 @@ class ExperimentEngine:
         anything runs.
         """
         original = self.store.load(experiment_id)
+        if getattr(original, "family", None) == "text_evasion":  # ML01 spam-filter evasion
+            return self.text.replay(original)
         if not isinstance(original, ExperimentRecord):  # ML02 poisoning record
             return self.poisoning.replay(original)
         if original.status != "completed":

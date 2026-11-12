@@ -10,6 +10,8 @@ Every source of randomness derives from the experiment `seed`:
 | Adversarial training | `default_rng([seed, round, i])` |
 | ML02 poisoned-row selection | `default_rng([seed, 202302])` (random / targeted-random); stable margin sort for `boundary` |
 | ML02 kNN sanitisation | deterministic: Euclidean distances, ties broken by index (no randomness) |
+| ML01 spam corpus split | SHA-256-verified bundled file, exact de-duplication, `train_test_split(stratify, random_state=seed)` |
+| ML01 spam attack candidates | `default_rng([seed, 1001, test_index])` per message; augmentation `default_rng([seed, 4242, train_index])` |
 
 ML02 records (`mlbreak.poisoning/v1`) use the same fingerprint scheme. `results_sha256` covers the training
 rows, test rows and metrics. The `poisoning` block also stores `clean_labels_sha256`,
