@@ -31,6 +31,7 @@ INVARIANT_METRICS = (
     "test_accuracy", "clean_test_accuracy", "train_accuracy", "target_class_recall", "attack_success_rate",
     "collateral_damage_rate", "undefended_attack_success_rate", "detection_recall", "detection_precision",
     "false_positive_rate", "recovery_rate", "clean_data_test_accuracy", "clean_data_flag_rate", "poison_rate",
+    "labels_repaired", "labels_corrupted",
 )
 
 

@@ -27,7 +27,11 @@ This page covers the ML01 evasion lab and the platform. The ML02 data-poisoning 
 * **IBM ART** was evaluated and not adopted. For a 2-feature scikit-learn MLP, analytic gradients
   and ~150 lines of attack code keep the lab transparent and fully tested, with no heavy dependency.
   ART is the right choice when the lab grows to image models or stronger attacks.
-* **Reproducibility is platform-scoped**: see [reproducibility.md](reproducibility.md).
+* **Reproducibility is environment-scoped.** Identical package versions still give different trained models on
+  different BLAS libraries and CPU kernels. Bit-identical replay holds only within one numerical environment
+  (`numerical_environment_sha256`). The adaptive-attack result against adversarial training varies by up to
+  6.7 pp across environments (25.0–31.7% for MLB-REG-002), and 25.5–43.4% across seeds. See
+  [regression-analysis-mlb-reg-002.md](regression-analysis-mlb-reg-002.md).
 * **Timeouts are cooperative, not preemptive.** The deadline is checked between uninterruptible segments.
   An experiment can overshoot by the longest segment that started before the deadline (typically one
   scikit-learn fit), plus the short unchecked tail that builds and writes the evidence. That tail

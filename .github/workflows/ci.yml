@@ -5,14 +5,33 @@ permissions:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]   # supported stacks: py3.11 → NumPy 2.4.x, py3.12 → NumPy 2.5.x (see requirements/)
+    env:
+      # GitHub's x86_64 runner pool mixes AMD (Zen) and Intel (some with AVX-512 → SkylakeX) CPUs, and OpenBLAS
+      # picks a kernel per CPU. The kernel changes the floating-point result of model training, so it is pinned
+      # to make CI independent of the runner's CPU. See docs/regression-analysis-mlb-reg-002.md.
+      OPENBLAS_CORETYPE: Haswell
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install -e ".[dev]"
-      - run: pytest
+        with: { python-version: "${{ matrix.python }}" }
+      - name: Install locked dependencies (hash-checked) and the project
+        run: |
+          pip install --require-hashes -r requirements/ci-py${{ matrix.python }}.txt
+          pip install --no-deps -e .
+      - name: Numerical environment
+        run: python -m mlbreak env
+      - name: Tests
+        run: pytest
       - name: Security regression gate
+        if: ${{ !cancelled() }}   # report the gate even when a test failed
         run: python -m mlbreak verify
+      - name: Demo (all labs, replay + integrity)
+        if: ${{ !cancelled() }}
+        run: python -m mlbreak demo --lab all
   frontend:
     runs-on: ubuntu-latest
     steps:

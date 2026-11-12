@@ -59,8 +59,14 @@ export function Regression() {
                   <tr key={inv.id}>
                     <td title={inv.description}>{inv.id}<div className="muted small">{inv.description}</div></td>
                     <td title={KIND_HELP[inv.kind]}>{inv.kind}</td><td>{inv.posture}</td>
-                    <td className="mono">{inv.metric} {inv.op} {inv.value}</td>
-                    <td className="num">{o?.observed == null ? "—" : o.observed.toFixed(4)}</td>
+                    <td className="mono">{inv.statistic ? `${inv.statistic}(${inv.metric})` : inv.metric} {inv.op} {inv.value}</td>
+                    <td className="num">{o?.observed == null ? "—"
+                      : inv.statistic === "mcnemar_p_value" ? o.observed.toExponential(2) : o.observed.toFixed(4)}
+                      {o?.details && (
+                        <div className="small muted" title={o.details.population}>
+                          paired n={o.details.n_paired} · {o.details.undefended_successes}→{o.details.defended_successes} succeeded
+                          · b={o.details.only_undefended_succeeded_b} c={o.details.only_defended_succeeded_c}
+                        </div>)}</td>
                     <td>{o ? (o.passed ? <Badge tone="good">pass</Badge> : <Badge tone="critical">fail</Badge>) : "—"}
                       {o?.experiment_id && <div className="small"><ExpLink id={o.experiment_id} /></div>}</td>
                   </tr>);

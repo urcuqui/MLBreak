@@ -65,7 +65,7 @@ seeded `make_moons` dataset. In the lab you can:
 6. **Security regression**: declared invariants in `security_cases/` are re-checked by
    `mlbreak verify` and by pytest.
 
-Reference results (seed 7, MLP, PGD L∞ ε=0.3, 150 test samples). These are produced by `mlbreak demo`:
+Reference results (seed 7, MLP, PGD L∞ ε=0.3, 150 test samples), produced by `mlbreak demo` on macOS arm64 (Apple Accelerate):
 
 | Evaluation | Clean accuracy | Adversarial accuracy | Robust accuracy | Attack success | Adversarial abstention |
 |---|---|---|---|---|---|
@@ -81,8 +81,15 @@ an adaptive attacker shows it is not. Note what the replay row really says: most
 *abstained on*, not classified correctly, so adversarial accuracy is 35.3%, not the 86.7% an
 earlier formula reported by counting abstentions as correct. Metric definitions are in
 [docs/methodology.md](docs/methodology.md#metrics). Adversarial and robust accuracy differ only when a
-correctly classified sample was not perturbed by the replayed parent (one sample in the AT replay row). Exact values can shift slightly across platforms and library versions
-(see [docs/reproducibility.md](docs/reproducibility.md)).
+correctly classified sample was not perturbed by the replayed parent (one sample in the AT replay row).
+
+**Numbers depend on the numerical environment, not only on the code.** With identical package versions, the
+BLAS library and CPU kernel change the trained model. Most rows move by a sample or two, but the adaptive
+attack against adversarial training ranges from **25.0% to 31.7%** across the 7 environments tested (31.7% on
+the CI reference, Linux x86_64 / OpenBLAS Haswell). In every one of them, adversarial training still reduces
+adaptive success significantly on the same samples (McNemar p ≤ 0.004, −8.3 to −14.6 pp). See
+[docs/regression-analysis-mlb-reg-002.md](docs/regression-analysis-mlb-reg-002.md) and
+[docs/reproducibility.md](docs/reproducibility.md#numerical-environment-and-dependency-strategy).
 
 ## Architecture
 
@@ -139,7 +146,16 @@ python3.12 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 PYTHONPATH=src .venv/bin/python -m mlbreak serve
 ```
 
-Docker (UI built in the image, published on 127.0.0.1 only, read-only filesystem, all capabilities dropped):
+Reproducible install (what CI does: hash-pinned numerical stack, then the project without re-resolving):
+
+```bash
+pip install --require-hashes -r requirements/ci-py3.12.txt   # or ci-py3.11.txt
+pip install --no-deps -e .
+OPENBLAS_CORETYPE=Haswell python -m mlbreak verify           # Linux x86_64: same BLAS kernel as CI
+python -m mlbreak env                                         # print your numerical environment
+```
+
+Docker (UI built in the image, hash-pinned runtime dependencies, published on 127.0.0.1 only, read-only filesystem, all capabilities dropped):
 
 ```bash
 docker compose up --build    # http://127.0.0.1:8000
@@ -199,7 +215,8 @@ Evidence is written to `var/experiments/` (override with `MLBREAK_DATA_DIR`).
 * [Experimental methodology](docs/methodology.md)
 * [OWASP mapping](docs/owasp-mapping.md)
 * [Limitations](docs/limitations.md)
-* [Reproducibility](docs/reproducibility.md)
+* [Reproducibility](docs/reproducibility.md): integrity vs authenticity, dependency locks, numerical environments
+* [MLB-REG-002 root-cause analysis](docs/regression-analysis-mlb-reg-002.md)
 * [Responsible use](docs/responsible-use.md)
 
 ## Troubleshooting

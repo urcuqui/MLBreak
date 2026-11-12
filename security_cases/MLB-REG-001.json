@@ -3,19 +3,58 @@
   "title": "Adversarial training withstands replayed PGD perturbations",
   "owasp_id": "ML01:2023",
   "seed": 7,
-  "attack": {"attack": "pgd", "norm": "linf", "epsilon": 0.3, "steps": 40},
-  "defense": {"kind": "adversarial_training", "epsilon": 0.2, "norm": "linf", "steps": 20, "rounds": 3},
+  "attack": {
+    "attack": "pgd",
+    "norm": "linf",
+    "epsilon": 0.3,
+    "steps": 40
+  },
+  "defense": {
+    "kind": "adversarial_training",
+    "epsilon": 0.2,
+    "norm": "linf",
+    "steps": 20,
+    "rounds": 3
+  },
   "defended_evaluation": "replay",
   "invariants": [
-    {"id": "attack-still-effective", "kind": "attack_canary", "posture": "undefended",
-     "metric": "attack_success_rate", "op": ">=", "value": 0.30,
-     "description": "PGD L∞ ε=0.3 must still evade the undefended model; otherwise this case no longer tests anything."},
-    {"id": "replay-blocked", "kind": "security", "posture": "defended",
-     "metric": "attack_success_rate", "op": "<=", "value": 0.20,
-     "description": "At most 20% of the replayed perturbations may still evade the adversarially trained model."},
-    {"id": "clean-utility-kept", "kind": "utility", "posture": "defended",
-     "metric": "clean_accuracy", "op": ">=", "value": 0.93,
-     "description": "Adversarial training must keep clean test accuracy ≥ 93%."}
+    {
+      "id": "attack-still-effective",
+      "kind": "attack_canary",
+      "posture": "undefended",
+      "metric": "attack_success_rate",
+      "op": ">=",
+      "value": 0.3,
+      "description": "PGD L∞ ε=0.3 must still evade the undefended model; otherwise this case no longer tests anything."
+    },
+    {
+      "id": "replay-blocked",
+      "kind": "security",
+      "posture": "defended",
+      "metric": "attack_success_rate",
+      "op": "<=",
+      "value": 0.2,
+      "description": "At most 20% of the replayed perturbations may still evade the adversarially trained model."
+    },
+    {
+      "id": "replay-reduction-significant",
+      "kind": "security",
+      "posture": "paired",
+      "statistic": "mcnemar_p_value",
+      "metric": "attack_success_rate",
+      "op": "<=",
+      "value": 0.05,
+      "description": "On the same test samples, replayed perturbations must succeed significantly less often against the adversarially trained model (exact one-sided McNemar, α = 0.05; observed p ≤ 1.6e-08 in 7 environments)."
+    },
+    {
+      "id": "clean-utility-kept",
+      "kind": "utility",
+      "posture": "defended",
+      "metric": "clean_accuracy",
+      "op": ">=",
+      "value": 0.93,
+      "description": "Adversarial training must keep clean test accuracy ≥ 93%."
+    }
   ],
   "rationale": "Non-adaptive replay: perturbations are crafted against the undefended model and re-submitted unchanged."
 }

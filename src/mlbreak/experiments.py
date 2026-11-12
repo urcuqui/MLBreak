@@ -116,18 +116,6 @@ class EvidenceIntegrityError(InvalidExperiment):
                          "refusing to replay tampered or inconsistent evidence")
 
 
-def require_integrity(record) -> dict[str, Any]:
-    """Verify a stored record and raise :class:`EvidenceIntegrityError` if any check fails.
-
-    This is an *integrity* (consistency) check, not an authenticity check: see
-    ``docs/reproducibility.md#integrity-is-not-authenticity``.
-    """
-    report = verify_record(record)
-    if not report["ok"]:
-        raise EvidenceIntegrityError(record.experiment_id, report)
-    return report
-
-
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -168,24 +156,94 @@ REPRODUCIBLE_FIELDS = {
 }
 
 
+_DEPENDENCIES = ("numpy", "scipy", "scikit-learn", "pandas", "pydantic", "pydantic-core", "fastapi", "joblib",
+                 "threadpoolctl")
+
+
+def _dependency_versions() -> dict[str, str | None]:
+    from importlib.metadata import PackageNotFoundError, version
+    out: dict[str, str | None] = {}
+    for name in _DEPENDENCIES:
+        try:
+            out[name] = version(name)
+        except PackageNotFoundError:  # pragma: no cover
+            out[name] = None
+    return out
+
+
+def _numerical_backend() -> dict[str, Any]:
+    """Which BLAS NumPy was BUILT against, and which kernels are active at runtime.
+
+    Floating-point results of model training depend on these: the same package versions give different
+    trained parameters with Apple Accelerate vs OpenBLAS, and with different OpenBLAS CPU kernels
+    (``OPENBLAS_CORETYPE``, auto-detected from the CPU). See docs/regression-analysis-mlb-reg-002.md.
+    """
+    import os
+    try:
+        blas = np.show_config(mode="dicts").get("Build Dependencies", {}).get("blas", {})
+        build = {"name": blas.get("name"), "version": blas.get("version")}
+    except Exception:  # pragma: no cover - informational only
+        build = None
+    return {"numpy_blas_build": build, "blas_runtime_kernels": _blas_kernels(),
+            "openblas_coretype_env": os.environ.get("OPENBLAS_CORETYPE")}
+
+
+def _blas_kernels() -> Any:
+    try:
+        from threadpoolctl import threadpool_info
+        return sorted({f"{i.get('internal_api')}:{i.get('architecture')}" for i in threadpool_info()
+                       if i.get("user_api") == "blas"})
+    except Exception:  # pragma: no cover - informational only
+        return None
+
+
 def reproducibility_info() -> dict[str, Any]:
     import pydantic
+    deps = _dependency_versions()
+    backend = _numerical_backend()
+    numeric = {"python": sys.version.split()[0], "machine": platform.machine(), "system": platform.system(),
+               "dependencies": deps, "numpy_blas_build": backend["numpy_blas_build"],
+               "blas_runtime_kernels": backend["blas_runtime_kernels"]}
     return {
         "mlbreak_version": __version__,
         "python": sys.version.split()[0],
         "numpy": np.__version__,
         "scikit_learn": sklearn.__version__,
         "pydantic": pydantic.__version__,
+        "scipy": deps.get("scipy"),
         "platform": platform.platform(),
         "machine": platform.machine(),
         "blas_threads": _blas_threads(),
+        "dependencies": deps,
+        "numerical_backend": backend,
+        # Records with the same fingerprint ran on an equivalent numerical stack; only then is a replay expected
+        # to be bit-identical. Different fingerprints are NOT comparable bit-for-bit.
+        "numerical_environment_sha256": sha256_json(numeric),
         "deterministic": True,
         "fields": REPRODUCIBLE_FIELDS,
-        "note": "Bit-identical replay is expected on the same platform and library versions.",
+        "note": "Bit-identical replay is expected only on the same numerical environment "
+                "(numerical_environment_sha256): platform, BLAS build and kernel, and library versions.",
     }
 
 
-ENVIRONMENT_KEYS = ("mlbreak_version", "python", "numpy", "scikit_learn", "platform", "machine")
+ENVIRONMENT_KEYS = ("mlbreak_version", "python", "numpy", "scipy", "scikit_learn", "platform", "machine",
+                    "numerical_environment_sha256")
+
+
+def environment_differences(original: dict[str, Any], replay: dict[str, Any]) -> dict[str, Any]:
+    """Environment keys that differ between two records. Keys the ORIGINAL did not record (older records)
+    are not reported as differences."""
+    return {k: {"original": original.get(k), "replay": replay.get(k)} for k in ENVIRONMENT_KEYS
+            if k in original and original.get(k) != replay.get(k)}
+
+
+def environment_note(env_diff: dict[str, Any], identical: bool) -> list[str]:
+    if not env_diff:
+        return []
+    note = ("The numerical environment differs from the original (see environment_differences). Bit-identical "
+            "results are only expected on the same environment")
+    note += "; the differences above explain why this replay is not identical." if not identical else "."
+    return [note]
 
 
 class ExperimentEngine:
@@ -216,11 +274,58 @@ class ExperimentEngine:
         return self._run("defend", req, lambda r, deadline: self._defend(r, parent, deadline), replay_of)
 
     def verify(self, experiment_id: str) -> dict[str, Any]:
-        """Evidence integrity check of a stored record (no re-execution). Dispatches on the record family."""
-        rec = self.store.load(experiment_id)
-        if not isinstance(rec, ExperimentRecord):
-            return self.poisoning.verify(rec)
-        return verify_record(rec)
+        """Evidence integrity check of a stored record (no re-execution), including its lineage."""
+        return self.verify_full(self.store.load(experiment_id))
+
+    def verify_full(self, rec) -> dict[str, Any]:
+        """Record-level integrity (dispatched on the record family) + lineage integrity."""
+        if isinstance(rec, ExperimentRecord):
+            report = verify_record(rec)
+        else:
+            from .poisoning.integrity import verify_poisoning_record
+            report = verify_poisoning_record(rec)
+        lineage = self._lineage_check(rec)
+        if lineage is not None:
+            report["checks"].append(lineage)
+            report["ok"] = report["ok"] and lineage["status"] != "fail"
+        return report
+
+    def require_verified(self, rec) -> dict[str, Any]:
+        """Raise :class:`EvidenceIntegrityError` unless :meth:`verify_full` passes. Required before any replay or
+        reuse of stored evidence (replays, parents, ML02 boundary plots)."""
+        report = self.verify_full(rec)
+        if not report["ok"]:
+            raise EvidenceIntegrityError(rec.experiment_id, report)
+        return report
+
+    def _lineage_check(self, rec) -> dict[str, Any] | None:
+        """A child record's parent must still exist, pass its own integrity check and match the parent hashes the
+        child recorded when it was created (so a parent edited after the fact invalidates its children)."""
+        from .evidence import ExperimentNotFound
+        from .integrity import _check
+        if not rec.parent_experiment_id:
+            return None
+        lin = rec.lineage
+        if not lin:
+            return _check("lineage", None, "no lineage block (records written before lineage was recorded)")
+        if lin.get("parent_experiment_id") != rec.parent_experiment_id:
+            return _check("lineage", False, "lineage.parent_experiment_id ≠ parent_experiment_id")
+        try:
+            parent = self.store.load(rec.parent_experiment_id)
+        except ExperimentNotFound:
+            return _check("lineage", False, f"parent {rec.parent_experiment_id} not found")
+        if isinstance(parent, ExperimentRecord):
+            parent_report = verify_record(parent)
+        else:
+            from .poisoning.integrity import verify_poisoning_record
+            parent_report = verify_poisoning_record(parent)
+        pr = parent.reproducibility
+        mismatched = [k for k, pk in (("parent_config_sha256", "config_sha256"), ("parent_results_sha256", "results_sha256"),
+                                     ("parent_record_sha256", "record_sha256")) if lin.get(k) != pr.get(pk)]
+        problems = ([] if parent_report["ok"] else ["parent fails its own integrity check"]) + \
+            ([f"parent hashes changed since this record was created: {mismatched}"] if mismatched else [])
+        return _check("lineage", not problems, "; ".join(problems) or
+                      f"parent {parent.experiment_id} verifies and matches the recorded parent hashes")
 
     def gated(self, fn: Callable[[float], Any]) -> Any:
         """Run ``fn(deadline)`` inside the shared concurrency gate and wall-clock deadline (any lab family)."""
@@ -239,7 +344,7 @@ class ExperimentEngine:
             return self.poisoning.replay(original)
         if original.status != "completed":
             raise InvalidExperiment("only completed experiments can be replayed")
-        integrity = require_integrity(original)
+        integrity = self.require_verified(original)
         if original.mode == "baseline":
             new = self.run_baseline(BaselineRequest.model_validate(original.request), replay_of=experiment_id)
         elif original.mode == "attack":
@@ -263,17 +368,15 @@ class ExperimentEngine:
             pairs += [("metrics_sha256", o_rep.get("metrics_sha256"), n_rep.get("metrics_sha256")),
                       ("results_sha256", o_rep.get("results_sha256"), n_rep.get("results_sha256"))]
         checks = [{"check": n, "original": a, "replay": b, "match": a == b} for n, a, b in pairs]
-        env_diff = {k: {"original": o_rep.get(k), "replay": n_rep.get(k)} for k in ENVIRONMENT_KEYS
-                    if o_rep.get(k) != n_rep.get(k)}
+        env_diff = environment_differences(o_rep, n_rep)
+        identical = all(c["match"] for c in checks)
         notes = []
         if legacy:
             notes.append("Original record uses schema v1, whose adversarial_accuracy definition counted abstentions "
                          "as correct; metrics are not comparable, so per-sample results are compared instead.")
-        if env_diff:
-            notes.append("The runtime environment differs from the original; bit-identical results are only expected "
-                         "on the same platform and library versions.")
+        notes += environment_note(env_diff, identical)
         return {"original_experiment_id": experiment_id, "replay_experiment_id": new.experiment_id,
-                "identical": all(c["match"] for c in checks), "checks": checks,
+                "identical": identical, "checks": checks,
                 "original_integrity": integrity,
                 "environment_differences": env_diff, "notes": notes}
 
@@ -398,7 +501,7 @@ class ExperimentEngine:
             raise InvalidExperiment(
                 f"parent {parent_id} must be a non-adaptive attack against the undefended model "
                 f"(got mode={parent.mode}, evaluation={parent.evaluation})")
-        require_integrity(parent)  # EvidenceIntegrityError is an InvalidExperiment
+        self.require_verified(parent)  # EvidenceIntegrityError is an InvalidExperiment
         return parent
 
     def _lineage(self, parent: ExperimentRecord, relation: str, *, scenario_id: str, model_id: str, seed: int,

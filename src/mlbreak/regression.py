@@ -12,6 +12,12 @@ poisoned training set. Each invariant names a *posture* and a metric:
 * ``defended`` — the defended system, evaluated either by ``replay`` of the
   undefended perturbations or by a new ``adaptive`` attack.
 
+* ``paired`` — a comparison of the two on the SAME test samples
+  (:mod:`mlbreak.stats`): ``absolute_reduction`` / ``relative_reduction`` of the
+  attack success rate, or the exact one-sided ``mcnemar_p_value`` that the defense
+  reduces success. Paired invariants express "the defense helps" directly instead
+  of relying on one hard-coded bound that numerical noise can push either way.
+
 Invariant kinds: ``security`` (the defense must hold), ``utility`` (the
 defense must not destroy clean performance), ``attack_canary`` (the attack or a
 known limitation must still be observable).
@@ -28,22 +34,34 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .config import LIMITS
 from .experiments import EngineBusy, ExperimentEngine
 from .poisoning.metrics import INVARIANT_METRICS as POISONING_METRICS
 from .poisoning.schemas import KnnLabelSanitization, LabelFlipConfig, PoisonAttackRequest, PoisonDefendRequest
+from .stats import STATISTICS, paired_comparison
 from .schemas import AttackConfig, AttackRequest, DefendRequest, DefenseConfig, SampleSelection
 
 _OPS = {"<=": operator.le, ">=": operator.ge, "<": operator.lt, ">": operator.gt, "==": operator.eq}
 
 
-class Invariant(BaseModel):
+class _PairedMixin(BaseModel):
+    @model_validator(mode="after")
+    def _paired(self):
+        if (self.posture == "paired") != (self.statistic is not None):
+            raise ValueError("posture 'paired' requires a statistic, and a statistic requires posture 'paired'")
+        if self.posture == "paired" and self.metric != "attack_success_rate":
+            raise ValueError("paired statistics compare attack_success_rate between the two postures")
+        return self
+
+
+class Invariant(_PairedMixin):
     model_config = ConfigDict(extra="forbid")
     id: str
     kind: Literal["security", "utility", "attack_canary"]
-    posture: Literal["undefended", "defended"]
+    posture: Literal["undefended", "defended", "paired"]
+    statistic: Literal[STATISTICS] | None = None  # type: ignore[valid-type]
     metric: Literal["attack_success_rate", "adversarial_accuracy", "clean_accuracy", "coverage",
                     "robust_accuracy", "abstention_rate_adversarial", "attack_resisted_rate",
                     "adversarial_coverage", "selective_accuracy", "adversarial_selective_accuracy",
@@ -69,11 +87,12 @@ class SecurityCase(BaseModel):
     rationale: str
 
 
-class PoisoningInvariant(BaseModel):
+class PoisoningInvariant(_PairedMixin):
     model_config = ConfigDict(extra="forbid")
     id: str
     kind: Literal["security", "utility", "attack_canary"]
-    posture: Literal["undefended", "defended"]
+    posture: Literal["undefended", "defended", "paired"]
+    statistic: Literal[STATISTICS] | None = None  # type: ignore[valid-type]
     metric: Literal[POISONING_METRICS]  # type: ignore[valid-type]
     op: Literal["<=", ">=", "<", ">", "=="]
     value: float = Field(ge=0, le=1)
@@ -116,14 +135,25 @@ def _metric(record, name: str) -> float | None:
     return None if m is None else m.get("value")
 
 
+def _completed(rec) -> bool:
+    return rec is not None and rec.status == "completed"
+
+
 def _evaluate(case: AnyCase, undefended, defended) -> dict[str, Any]:
+    comparison = (paired_comparison(undefended, defended)
+                  if _completed(undefended) and _completed(defended) else None)
     results = []
     for inv in case.invariants:
-        rec = undefended if inv.posture == "undefended" else defended
-        observed = None if rec is None or rec.status != "completed" else _metric(rec, inv.metric)
+        if inv.posture == "paired":
+            observed = None if comparison is None else comparison[inv.statistic]
+            extra = {"details": comparison,
+                     "experiment_id": defended.experiment_id if defended else None}
+        else:
+            rec = undefended if inv.posture == "undefended" else defended
+            observed = _metric(rec, inv.metric) if _completed(rec) else None
+            extra = {"experiment_id": rec.experiment_id if rec else None}
         passed = observed is not None and _OPS[inv.op](observed, inv.value)
-        results.append({**inv.model_dump(), "observed": observed, "passed": passed,
-                        "experiment_id": rec.experiment_id if rec else None})
+        results.append({**inv.model_dump(), "observed": observed, "passed": passed, **extra})
     return {
         "id": case.id, "title": case.title, "owasp_id": case.owasp_id,
         "defended_evaluation": case.defended_evaluation,
@@ -214,7 +244,8 @@ def render_report(report: dict[str, Any]) -> str:
                   "| Invariant | Kind | Posture | Check | Observed | Result |", "|---|---|---|---|---|---|"]
         for i in c["invariants"]:
             obs = "n/a" if i["observed"] is None else f"{i['observed']:.4f}"
-            lines.append(f"| {i['id']} | {i['kind']} | {i['posture']} | {i['metric']} {i['op']} {i['value']} "
+            check = (f"{i['statistic']}({i['metric']})" if i.get("statistic") else i["metric"])
+            lines.append(f"| {i['id']} | {i['kind']} | {i['posture']} | {check} {i['op']} {i['value']} "
                          f"| {obs} | {'pass' if i['passed'] else '**FAIL**'} |")
         lines.append("")
     return "\n".join(lines)

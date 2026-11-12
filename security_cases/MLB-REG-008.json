@@ -4,18 +4,56 @@
   "title": "Known limitation: dense targeted flipping turns kNN sanitisation against the target class",
   "owasp_id": "ML02:2023",
   "seed": 7,
-  "poison": {"strategy": "targeted", "fraction": 0.2, "target_class": 1, "selection": "random"},
-  "defense": {"kind": "knn_label_sanitization", "k": 10, "agreement_threshold": 0.5, "action": "relabel"},
+  "poison": {
+    "strategy": "targeted",
+    "fraction": 0.2,
+    "target_class": 1,
+    "selection": "random"
+  },
+  "defense": {
+    "kind": "knn_label_sanitization",
+    "k": 10,
+    "agreement_threshold": 0.5,
+    "action": "relabel"
+  },
   "invariants": [
-    {"id": "dense-attack-effective", "kind": "attack_canary", "posture": "undefended",
-     "metric": "attack_success_rate", "op": ">=", "value": 0.30,
-     "description": "Flipping 70 class-1 labels must still break ≥ 30% of correctly classified class-1 test samples."},
-    {"id": "defense-does-not-restore", "kind": "attack_canary", "posture": "defended",
-     "metric": "attack_success_rate", "op": ">=", "value": 0.30,
-     "description": "Once flips are dense, neighbourhood majorities shift: sanitisation must not be reported as restoring the target class."},
-    {"id": "collateral-relabelling", "kind": "attack_canary", "posture": "defended",
-     "metric": "false_positive_rate", "op": ">=", "value": 0.10,
-     "description": "Sanitisation flags ≥ 10% of CLEAN labels here, relabelling genuine class-1 samples towards the attacker's label."}
+    {
+      "id": "dense-attack-effective",
+      "kind": "attack_canary",
+      "posture": "undefended",
+      "metric": "attack_success_rate",
+      "op": ">=",
+      "value": 0.3,
+      "description": "Flipping 70 class-1 labels must still break ≥ 30% of correctly classified class-1 test samples."
+    },
+    {
+      "id": "defense-does-not-restore",
+      "kind": "attack_canary",
+      "posture": "defended",
+      "metric": "attack_success_rate",
+      "op": ">=",
+      "value": 0.3,
+      "description": "Once flips are dense, neighbourhood majorities shift: sanitisation must not be reported as restoring the target class."
+    },
+    {
+      "id": "collateral-relabelling",
+      "kind": "attack_canary",
+      "posture": "defended",
+      "metric": "false_positive_rate",
+      "op": ">=",
+      "value": 0.1,
+      "description": "Sanitisation flags ≥ 10% of CLEAN labels here, relabelling genuine class-1 samples towards the attacker's label."
+    },
+    {
+      "id": "defense-backfires",
+      "kind": "attack_canary",
+      "posture": "paired",
+      "statistic": "absolute_reduction",
+      "metric": "attack_success_rate",
+      "op": "<=",
+      "value": 0.0,
+      "description": "On the same class-1 test samples, sanitisation does not reduce the dense targeted attack at all (observed 34 → 37 broken: −4.2 pp)."
+    }
   ],
   "rationale": "Documents that label sanitisation can make a targeted attack worse when the flipped fraction of a class is large."
 }

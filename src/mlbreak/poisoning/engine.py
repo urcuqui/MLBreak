@@ -37,7 +37,7 @@ from ..models import DifferentiableClassifier, train_model
 from ..owasp import get_category
 from .attacks import (InvalidPoisonConfig, PoisonBudgetViolation, enforce_poison_budget, flip_labels,
                       knn_label_check, n_flips, sanitize, select_poison_indices)
-from .integrity import label_hashes, results_fingerprint, verify_poisoning_record
+from .integrity import label_hashes, results_fingerprint
 from .metrics import classify_test_outcome, derive_metrics
 from .schemas import (SCENARIO_ID, KnnLabelSanitization, LabelFlipConfig, PoisonAttackRequest,
                       PoisonBaselineRequest, PoisonDefendRequest, PoisoningRecord, TestSampleResult,
@@ -91,18 +91,15 @@ class PoisoningLab:
         return self._execute("defend", req, lambda r, d: self._defend(r, parent, d), replay_of)
 
     def verify(self, rec: PoisoningRecord) -> dict[str, Any]:
-        return verify_poisoning_record(rec)
+        return self.engine.verify_full(rec)
 
     def require_integrity(self, rec: PoisoningRecord) -> dict[str, Any]:
-        from ..experiments import EvidenceIntegrityError
-        report = verify_poisoning_record(rec)
-        if not report["ok"]:
-            raise EvidenceIntegrityError(rec.experiment_id, report)
-        return report
+        """Record + lineage integrity; raises EvidenceIntegrityError (HTTP 409) otherwise."""
+        return self.engine.require_verified(rec)
 
     def replay(self, original: PoisoningRecord) -> dict[str, Any]:
         """Re-execute a stored ML02 record (integrity-verified first) and compare its fingerprints."""
-        from ..experiments import ENVIRONMENT_KEYS, InvalidExperiment
+        from ..experiments import InvalidExperiment, environment_differences, environment_note
         if original.status != "completed":
             raise InvalidExperiment("only completed experiments can be replayed")
         integrity = self.require_integrity(original)
@@ -130,11 +127,11 @@ class PoisoningLab:
         pairs += [("metrics_sha256", o.get("metrics_sha256"), n.get("metrics_sha256")),
                   ("results_sha256", o.get("results_sha256"), n.get("results_sha256"))]
         checks = [{"check": k, "original": a, "replay": b, "match": a == b} for k, a, b in pairs]
-        env = {k: {"original": o.get(k), "replay": n.get(k)} for k in ENVIRONMENT_KEYS if o.get(k) != n.get(k)}
-        notes = (["The runtime environment differs from the original; bit-identical results are only expected on "
-                  "the same platform and library versions."] if env else [])
+        env = environment_differences(o, n)
+        identical = all(c["match"] for c in checks)
+        notes = environment_note(env, identical)
         return {"original_experiment_id": oid, "replay_experiment_id": new.experiment_id,
-                "identical": all(c["match"] for c in checks), "checks": checks, "original_integrity": integrity,
+                "identical": identical, "checks": checks, "original_integrity": integrity,
                 "environment_differences": env, "notes": notes}
 
     def boundary(self, experiment_id: str, which: str, resolution: int) -> dict[str, Any]:

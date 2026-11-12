@@ -112,6 +112,24 @@ MLP, seed 7, k = 10, threshold 0.5, relabel. Clean model: test accuracy 96.7% (1
 The point of the lab is the last two rows. A defense that looks good against blind label noise can do
 nothing, or harm, against a modestly informed poisoner.
 
+### Statistical support for each claim
+
+Paired comparison of undefended vs defended on the same test samples (exact one-sided McNemar). These
+values are identical in all 7 numerical environments tested: ML02 outcomes are prediction-level, and the
+predictions agree even where the model hashes differ.
+
+| Case | Broken test samples (undefended → defended) | b | c | p | What the evidence supports |
+|---|---|---|---|---|---|
+| MLB-REG-005 random 20% | 5 → 2 (of 145) | 3 | 0 | 0.125 | Detection (87.1%) and label repair. The test-time recovery is **not significant**: the poisoning barely hurt the model |
+| MLB-REG-006 targeted, sparse | 4 → 2 (of 71) | 2 | 0 | 0.25 | Detection (88.6%) and label repair. The test-time reduction is **not significant** |
+| MLB-REG-007 targeted, boundary | 17 → 16 (of 71) | 1 | 0 | 0.5 | Sanitisation is bypassed: no significant reduction, 0% detection |
+| MLB-REG-008 targeted, dense | 34 → 37 (of 71) | 7 | 10 | 0.83 | Sanitisation **backfires**: success rises by 4.2 pp |
+
+The regression cases encode exactly these claims. 005 and 006 assert label repair (`labels_repaired ≥ 0.80`),
+detection and "not made worse" (paired `absolute_reduction ≥ 0`). Their test-time bounds are kept, but
+described as absolute bounds rather than evidence of recovery. 007 and 008 assert the bypass and the
+backfire with paired canaries.
+
 ## 6. Limitations
 
 * **Two features, 350 training rows.** Neighbourhoods are meaningful in 2-D; kNN sanitisation degrades in
@@ -122,8 +140,10 @@ nothing, or harm, against a modestly informed poisoner.
   No attack is optimised against the deployed defense, so the defended results are an upper bound on
   defense effectiveness, not a robustness guarantee.
 * **Perfect-knowledge surrogate** for `boundary` selection, which overstates a realistic attacker.
-* **Small effect sizes** for random and sparse targeted flips (a few test samples). Regression thresholds
-  leave a one-sample margin and may need re-tuning on other platforms or library versions.
+* **Small effect sizes** for random and sparse targeted flips (2–5 test samples). Their test-time effect is
+  not statistically significant on 150 test samples (see the table above). Several absolute thresholds have
+  a 1–2 sample margin. They were identical across the 7 numerical environments tested, but a dependency
+  upgrade could move them.
 * **One defense family.** No loss-based filtering, influence functions, robust losses, or provenance controls
   on the label source, which is the strongest mitigation in practice.
 * **No poisoning detection at inference time**, and no monitoring of the label pipeline over time (that

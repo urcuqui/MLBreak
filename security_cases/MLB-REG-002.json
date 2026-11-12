@@ -1,6 +1,6 @@
 {
   "id": "MLB-REG-002",
-  "title": "Adversarial training reduces adaptive white-box PGD success",
+  "title": "Adversarial training significantly reduces adaptive white-box PGD success",
   "owasp_id": "ML01:2023",
   "seed": 7,
   "attack": {"attack": "pgd", "norm": "linf", "epsilon": 0.3, "steps": 40},
@@ -9,10 +9,19 @@
   "invariants": [
     {"id": "attack-still-effective", "kind": "attack_canary", "posture": "undefended",
      "metric": "attack_success_rate", "op": ">=", "value": 0.30,
-     "description": "PGD L∞ ε=0.3 must still evade the undefended model."},
-    {"id": "adaptive-success-reduced", "kind": "security", "posture": "defended",
-     "metric": "attack_success_rate", "op": "<=", "value": 0.30,
-     "description": "A new PGD attack using the defended model's gradients must succeed on at most 30% of correctly classified inputs. This is a reduction, not immunity."}
+     "description": "PGD L∞ ε=0.3 must still evade the undefended model (observed 39.3–40.7% in 7 numerical environments)."},
+    {"id": "adaptive-reduction-significant", "kind": "security", "posture": "paired", "statistic": "mcnemar_p_value",
+     "metric": "attack_success_rate", "op": "<=", "value": 0.05,
+     "description": "On the same test samples, the adaptive attack must succeed significantly less often against the adversarially trained model than against the undefended one (exact one-sided McNemar test, α = 0.05 fixed in advance; observed p ≤ 0.0038 in 7 environments)."},
+    {"id": "adaptive-absolute-reduction", "kind": "security", "posture": "paired", "statistic": "absolute_reduction",
+     "metric": "attack_success_rate", "op": ">=", "value": 0.05,
+     "description": "Adversarial training must remove at least 5 percentage points of adaptive attack success (≈ 7 of 145 samples; observed 8.3–14.6 pp)."},
+    {"id": "adaptive-relative-reduction", "kind": "security", "posture": "paired", "statistic": "relative_reduction",
+     "metric": "attack_success_rate", "op": ">=", "value": 0.15,
+     "description": "Adversarial training must remove at least 15% of the undefended adaptive success (observed 20.7–36.8%)."},
+    {"id": "adaptive-residual-bounded", "kind": "security", "posture": "defended",
+     "metric": "attack_success_rate", "op": "<=", "value": 0.35,
+     "description": "Residual adaptive success for THIS pinned configuration (seed 7) must stay ≤ 35% (observed 25.0–31.7% across 7 environments). Not a property of adversarial training in general: across seeds 0–9 the residual ranges 25.5–43.4%. This is a reduction, not immunity."}
   ],
-  "rationale": "Adaptive evaluation: the attacker has white-box access to the adversarially trained model."
+  "rationale": "Adaptive evaluation: the attacker has white-box access to the adversarially trained model. The defense claim is comparative, so the primary invariants compare undefended and defended success on the SAME samples. The former single bound (≤ 30%) was calibrated in one numerical environment and failed in 3 of 7 with no code change, because the BLAS kernel changes MLP training and the adaptive attack amplifies it; see docs/regression-analysis-mlb-reg-002.md."
 }

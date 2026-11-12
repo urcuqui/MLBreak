@@ -1,0 +1,15 @@
+# Keep the build context small and platform-neutral: never ship host virtualenvs, host node_modules
+# (esbuild ships per-platform binaries), local evidence, or VCS metadata into the image.
+.git
+.github
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+*.egg-info
+var
+frontend/node_modules
+frontend/dist
+frontend/tsconfig.tsbuildinfo
+tests
+docs

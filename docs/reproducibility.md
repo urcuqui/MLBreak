@@ -149,10 +149,55 @@ A hard limit would need process isolation (a worker process killed on timeout) o
 (`ulimit -t`, cgroups). `compose.yaml` caps CPU, memory and PIDs for the whole container, which bounds
 resource use but not the duration of an individual experiment.
 
+## Numerical environment and dependency strategy
+
+**The same package versions do not guarantee the same numbers.** NumPy's BLAS differs by platform (Apple
+Accelerate on macOS, OpenBLAS on Linux), and OpenBLAS picks a CPU-specific kernel at runtime (Haswell,
+Zen, SkylakeX, Neoverse, …). Each choice changes floating-point rounding. The MLP's L-BFGS fit then
+converges to different parameters, so the **model artifact hashes differ between environments even with
+identical versions**. Most metrics move by at most a sample or two; ML01 adaptive attacks against adversarial
+training move by up to ~10 samples. See [regression-analysis-mlb-reg-002.md](regression-analysis-mlb-reg-002.md).
+
+What MLBreak does about it:
+
+| Layer | Mechanism |
+|---|---|
+| Library users | `pyproject.toml` keeps compatible ranges (`numpy>=1.26`, …). Results are scientifically equivalent but not bit-identical across stacks |
+| CI and Docker | Hash-pinned locks: `requirements/ci-py3.11.txt`, `requirements/ci-py3.12.txt` (with dev tools), `requirements/runtime-py3.12.txt` (Docker). Installed with `pip install --require-hashes -r …` then `pip install --no-deps -e .` |
+| CPU kernel | CI sets `OPENBLAS_CORETYPE=Haswell`, because GitHub's x86_64 runner pool mixes AMD and Intel (AVX-512) CPUs |
+| Evidence | Every record stores `dependencies` (exact versions), `numerical_backend` (NumPy BLAS build, runtime kernels, `OPENBLAS_CORETYPE`) and `numerical_environment_sha256` |
+| Replay | Compares environments first. If `numerical_environment_sha256` differs, the replay reports it in `environment_differences` and explains why results are not bit-identical |
+| Regression | Security claims use **paired comparisons** (same samples, undefended vs defended) and margins measured across environments, not single-environment numbers |
+
+Print your environment with `mlbreak env`.
+
+### Supported and tested environments
+
+| Environment | Python | NumPy / SciPy / scikit-learn | BLAS (kernel) | Status |
+|---|---|---|---|---|
+| **CI reference** (Linux x86_64) | 3.12 | 2.5.4 / 1.18.1 / 1.9.1 (locked) | OpenBLAS (Haswell, pinned) | tests + gate + demo pass |
+| **CI reference** (Linux x86_64) | 3.11 | 2.4.6 / 1.17.1 / 1.9.1 (locked) | OpenBLAS (Haswell, pinned) | tests + gate + demo pass |
+| Developer macOS arm64 | 3.12 | 2.5.4 / 1.18.1 / 1.9.1 | Accelerate | tests + gate pass |
+| Linux x86_64, other kernels | 3.12 | locked | OpenBLAS SandyBridge / Nehalem / Prescott | tests + gate pass |
+| Linux arm64 | 3.12 | locked | OpenBLAS (neoversen1; generic armv8) | tests + gate pass |
+
+Python 3.11 resolves to NumPy 2.4.x because NumPy 2.5 dropped 3.11. On the Haswell kernel, the two CI
+stacks produced identical regression results.
+
+Regenerate the locks after an intentional dependency upgrade (commands at the top of each file), then run
+`pytest` and `mlbreak verify` in CI before merging. A change of numerical stack is a change of the
+measurement instrument, so treat it like a code change.
+
 ## Scope of "identical"
 
-Results are bit-identical on the same platform with the same library versions. Floating-point
-differences across CPU architectures, BLAS builds or scikit-learn versions can change the trained
-parameters in the last bits, and therefore the hashes. They can occasionally also change a
-borderline sample's outcome. When the artifact hash differs, `defend` refuses to replay stored
-perturbations against a regenerated model. Regression thresholds leave margin for this.
+Results are bit-identical **only within the same numerical environment** (`numerical_environment_sha256`):
+same platform and CPU architecture, BLAS build and kernel, and library versions. MLBreak does **not**
+claim bit-identical results across environments. Across them, model artifact hashes differ, and a
+borderline sample's outcome can change. Consequences:
+
+* `defend` (ML01) and defensive replay (ML02) refuse to reuse a parent whose model artifact cannot be
+  regenerated bit-for-bit in the current environment, instead of silently comparing different models.
+* ML02 boundary plots retrain the model and require its recorded artifact hash. A record created in another
+  numerical environment therefore cannot be plotted on this one; re-run the experiment locally.
+* Regression thresholds are set from measurements across the environments above, and comparative claims are
+  tested with paired statistics.

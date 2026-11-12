@@ -105,6 +105,15 @@ def cmd_replay(args) -> int:
     return 0 if result["identical"] else 1
 
 
+def cmd_env(args) -> int:
+    """Print the numerical environment recorded in every evidence record."""
+    from .experiments import reproducibility_info
+    info = reproducibility_info()
+    keys = ("python", "platform", "machine", "dependencies", "numerical_backend", "numerical_environment_sha256")
+    print(json.dumps({k: info[k] for k in keys}, indent=2))
+    return 0
+
+
 def cmd_list(args) -> int:
     for e in EvidenceStore(data_dir()).list():
         print(f"{e['experiment_id']}  {e['created_at'][:19]}  {e['evaluation']:<16} {e['status']:<9} "
@@ -126,7 +135,8 @@ def cmd_verify(args) -> int:
         for i in c["invariants"]:
             obs = "n/a" if i["observed"] is None else f"{i['observed']:.4f}"
             print(f"       {'ok ' if i['passed'] else 'BAD'} {i['kind']:<13} {i['posture']:<10} "
-                  f"{i['metric']} {i['op']} {i['value']}  (observed {obs})")
+                  f"{(i['statistic'] + '(' + i['metric'] + ')') if i.get('statistic') else i['metric']} {i['op']} {i['value']}  "
+                  f"(observed {obs})")
     print(f"\n{report['passed']}/{report['total']} cases passed. "
           f"Report: {data_dir() / 'regression' / 'security_regression_report.md'}")
     return 0 if report["ok"] else 1
@@ -305,6 +315,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("replay", help="re-execute an experiment and verify identical results")
     s.add_argument("experiment_id")
     s.set_defaults(fn=cmd_replay)
+
+    s = sub.add_parser("env", help="print the numerical environment (library versions, BLAS build and kernel)")
+    s.set_defaults(fn=cmd_env)
 
     s = sub.add_parser("list", help="list stored experiments")
     s.set_defaults(fn=cmd_list)

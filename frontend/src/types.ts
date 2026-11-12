@@ -85,9 +85,20 @@ export interface ReplayResult {
   checks: { check: string; original: unknown; replay: unknown; match: boolean }[];
 }
 
+/** Paired comparison of undefended vs defended success on the same test samples (posture "paired"). */
+export interface PairedDetails {
+  n_paired: number; undefended_successes: number; defended_successes: number;
+  only_undefended_succeeded_b: number; only_defended_succeeded_c: number;
+  undefended_rate: number | null; defended_rate: number | null;
+  absolute_reduction: number | null; relative_reduction: number | null; mcnemar_p_value: number | null;
+  population: string;
+}
+
 export interface Invariant {
   id: string; kind: string; posture: string; metric: string; op: string; value: number; description: string;
   observed?: number | null; passed?: boolean; experiment_id?: string | null;
+  statistic?: "absolute_reduction" | "relative_reduction" | "mcnemar_p_value" | null;
+  details?: PairedDetails | null;
 }
 
 export interface SecurityCase {

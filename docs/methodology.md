@@ -140,6 +140,26 @@ cannot have a parent. Incompatible requests return HTTP 422 with the reason.
 * `attack_canary`: the attack, or a documented limitation, must still be observable. This guards
   against "the defense passes because the attack silently broke".
 
+Each invariant applies to one **posture**: `undefended` (the attack), `defended` (replay or adaptive
+attack against the defense) or `paired`. A `paired` invariant compares the two on the **same test
+samples** (`src/mlbreak/stats.py`):
+
+| Statistic | Definition (paired population: samples eligible for the attack in both evaluations) |
+|---|---|
+| `absolute_reduction` | success rate undefended − success rate defended |
+| `relative_reduction` | absolute_reduction / success rate undefended (undefined if that is 0) |
+| `mcnemar_p_value` | exact one-sided McNemar test of "the defense reduces success": P(X ≤ c), X ~ Bin(b + c, ½), with b = successes only without the defense and c = only with it |
+
+A defense's claim ("it reduces attack success") is comparative, so its primary invariants are paired.
+A single bound on the defended posture cannot tell a working defense from a no-op one when the undefended
+rate is already low, and it breaks when numerical noise moves one number across a fixed line. That is what
+happened to MLB-REG-002 ([regression-analysis-mlb-reg-002.md](regression-analysis-mlb-reg-002.md)).
+Significance uses α = 0.05, fixed in advance. Effect-size thresholds and residual bounds are set from
+measurements across numerical environments, with the observed ranges recorded in each invariant's
+description.
+
+`MLB-REG-002` requires adversarial training to reduce adaptive PGD success significantly
+(McNemar p ≤ 0.05), by ≥ 5 pp and ≥ 15% relative, with residual success ≤ 35% for its pinned seed.
 `MLB-REG-004` encodes a known limitation as a canary: confidence rejection is bypassed by an
 adaptive attacker.
 

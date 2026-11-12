@@ -4,18 +4,56 @@
   "title": "Known limitation: kNN sanitisation is blind to boundary-targeted label flipping",
   "owasp_id": "ML02:2023",
   "seed": 7,
-  "poison": {"strategy": "targeted", "fraction": 0.1, "target_class": 1, "selection": "boundary"},
-  "defense": {"kind": "knn_label_sanitization", "k": 10, "agreement_threshold": 0.5, "action": "relabel"},
+  "poison": {
+    "strategy": "targeted",
+    "fraction": 0.1,
+    "target_class": 1,
+    "selection": "boundary"
+  },
+  "defense": {
+    "kind": "knn_label_sanitization",
+    "k": 10,
+    "agreement_threshold": 0.5,
+    "action": "relabel"
+  },
   "invariants": [
-    {"id": "boundary-attack-effective", "kind": "attack_canary", "posture": "undefended",
-     "metric": "attack_success_rate", "op": ">=", "value": 0.15,
-     "description": "Flipping the 35 class-1 samples nearest the clean boundary must still break ≥ 15% of correctly classified class-1 test samples."},
-    {"id": "defense-bypass-observable", "kind": "attack_canary", "posture": "defended",
-     "metric": "attack_success_rate", "op": ">=", "value": 0.15,
-     "description": "After kNN sanitisation the boundary-targeted attack must still succeed on ≥ 15%. If this drops, check whether the attack regressed BEFORE concluding the defense improved."},
-    {"id": "flips-invisible", "kind": "attack_canary", "posture": "defended",
-     "metric": "detection_recall", "op": "<=", "value": 0.20,
-     "description": "Boundary flips sit where neighbours already carry the flipped label, so kNN flags almost none of them."}
+    {
+      "id": "boundary-attack-effective",
+      "kind": "attack_canary",
+      "posture": "undefended",
+      "metric": "attack_success_rate",
+      "op": ">=",
+      "value": 0.15,
+      "description": "Flipping the 35 class-1 samples nearest the clean boundary must still break ≥ 15% of correctly classified class-1 test samples."
+    },
+    {
+      "id": "defense-bypass-observable",
+      "kind": "attack_canary",
+      "posture": "defended",
+      "metric": "attack_success_rate",
+      "op": ">=",
+      "value": 0.15,
+      "description": "After kNN sanitisation the boundary-targeted attack must still succeed on ≥ 15%. If this drops, check whether the attack regressed BEFORE concluding the defense improved."
+    },
+    {
+      "id": "flips-invisible",
+      "kind": "attack_canary",
+      "posture": "defended",
+      "metric": "detection_recall",
+      "op": "<=",
+      "value": 0.2,
+      "description": "Boundary flips sit where neighbours already carry the flipped label, so kNN flags almost none of them."
+    },
+    {
+      "id": "no-significant-reduction",
+      "kind": "attack_canary",
+      "posture": "paired",
+      "statistic": "mcnemar_p_value",
+      "metric": "attack_success_rate",
+      "op": ">=",
+      "value": 0.05,
+      "description": "Sanitisation must NOT significantly reduce the boundary-targeted attack (observed 17 → 16 broken, McNemar p = 0.5). If this becomes significant, check whether the attack regressed before concluding the defense improved."
+    }
   ],
   "rationale": "Pins the gap between MLB-REG-006 and an informed attacker (knowledge of clean-model margins), so the lab cannot silently start overstating this defense."
 }
