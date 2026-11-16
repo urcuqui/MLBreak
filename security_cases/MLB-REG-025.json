@@ -1,0 +1,21 @@
+{
+  "id": "MLB-REG-025",
+  "family": "membership",
+  "title": "Label-only output does not prevent membership inference by a label-aware attacker",
+  "owasp_id": "ML04:2023",
+  "model_id": "random-forest-overfit",
+  "seed": 7,
+  "defense": {"kind": "output_restriction", "policy": {"kind": "label_only"}},
+  "defended_evaluation": "adaptive",
+  "invariants": [
+    {"id": "reduction-significant", "kind": "security", "posture": "defended", "metric": "threshold_defense_reduction_p_value", "op": "<=", "value": 0.001,
+     "description": "Label-only output must still significantly reduce correct decisions of the recalibrated threshold attack (observed p ≈ 3e-15; significant on 20/20 seeds)."},
+    {"id": "decisions-unchanged", "kind": "utility", "posture": "defended", "metric": "consumer_decision_accuracy", "op": ">=", "value": 0.7,
+     "description": "Consumers keep the same decisions (observed 0.725, identical to the undefended service); ranking utility is lost."},
+    {"id": "leakage-remains", "kind": "attack_canary", "posture": "defended", "metric": "threshold_membership_advantage", "op": ">=", "value": 0.2,
+     "description": "DOCUMENTED DEFENSE FAILURE: an attacker who knows the label still gains ≥ 0.2 advantage from 'was it classified correctly' (observed 0.280; 20-seed range 0.256–0.332): the training/test accuracy gap itself leaks membership."},
+    {"id": "leakage-still-claimed", "kind": "attack_canary", "posture": "defended", "metric": "leakage_claimed", "op": "==", "value": 1.0,
+     "description": "Leakage must still be claimed against label-only output (observed p ≈ 1e-19; claimed on 20/20 seeds)."}
+  ],
+  "rationale": "Hiding the score removes the confidence signal but not correctness: an overfit model is right on (almost) all members and wrong on ~28% of non-members. Output restriction is not differential privacy (deterministic release, ε = ∞); only reducing the generalisation gap addresses this signal."
+}

@@ -1,15 +1,16 @@
 import { Link } from "react-router-dom";
 
-export type LabId = "ml01" | "ml02" | "ml03";
+export type LabId = "ml01" | "ml02" | "ml03" | "ml04";
 /** A lab path prefix under /lab/: a lab, or an ML01 scenario inside it. */
-export type LabPath = "ml01" | "ml01/spam" | "ml02" | "ml03";
+export type LabPath = "ml01" | "ml01/spam" | "ml02" | "ml03" | "ml04";
 const KEY = "mlbreak.lastLab";
 const ML01_KEY = "mlbreak.lastMl01Scenario";
-const PATHS: LabPath[] = ["ml01", "ml01/spam", "ml02", "ml03"];
+const PATHS: LabPath[] = ["ml01", "ml01/spam", "ml02", "ml03", "ml04"];
 const LABS: { id: LabId; label: string; title: string }[] = [
   { id: "ml01", label: "ML01 · Evasion", title: "OWASP ML01:2023 Input Manipulation Attack" },
   { id: "ml02", label: "ML02 · Poisoning", title: "OWASP ML02:2023 Data Poisoning Attack" },
   { id: "ml03", label: "ML03 · Inversion", title: "OWASP ML03:2023 Model Inversion Attack" },
+  { id: "ml04", label: "ML04 · Membership", title: "OWASP ML04:2023 Membership Inference Attack" },
 ];
 
 function read(key: string, fallback: LabPath): LabPath {
@@ -34,7 +35,7 @@ export function lastLab(): LabPath {
 
 /** Lab path prefix of a pathname, e.g. "/lab/ml01/spam/attack" → "ml01/spam". */
 export function labPathOf(pathname: string): LabPath | null {
-  const m = /^\/lab\/(ml01\/spam|ml01|ml02|ml03)(?:\/|$)/.exec(pathname);
+  const m = /^\/lab\/(ml01\/spam|ml01|ml02|ml03|ml04)(?:\/|$)/.exec(pathname);
   return (m?.[1] as LabPath) ?? null;
 }
 

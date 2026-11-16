@@ -52,7 +52,7 @@ jobs:
         run: >
           docker run -d --name mlbreak -p 127.0.0.1:8000:8000 --read-only --tmpfs /tmp --tmpfs /data:uid=10001
           --cap-drop ALL --security-opt no-new-privileges:true mlbreak:ci
-      - name: Smoke test (health, UI, bundled spam model, ML03 inversion experiment + budgeted attack session)
+      - name: Smoke test (health, UI, bundled spam model, ML03 inversion + budgeted attack session, ML04 membership)
         run: |
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/api/health && break; sleep 1; done
           curl -sf -o /dev/null http://127.0.0.1:8000/lab/ml01/spam/baseline
@@ -73,6 +73,12 @@ jobs:
           CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
             -d "{\"target_index\": $T, \"candidate\": 0}" http://127.0.0.1:8000/api/inversion/sessions/$SID/query)
           test "$CODE" = 403   # per-target budget of 1 exhausted
+          curl -sf -o /dev/null http://127.0.0.1:8000/lab/ml04/baseline
+          MID=$(curl -sf -X POST -H 'Content-Type: application/json' \
+            -d '{"candidates": {"n_members": 40, "n_non_members": 40}, "attack": {"n_shadow_models": 2}}' \
+            http://127.0.0.1:8000/api/experiments/membership/attack | python3 -c 'import json,sys; print(json.load(sys.stdin)["experiment_id"])')
+          curl -sf http://127.0.0.1:8000/api/experiments/$MID/verify | grep -q '"ok":true'
+          curl -sf http://127.0.0.1:8000/api/membership/independence/$MID | grep -q '"ok":true'
       - name: Container logs
         if: ${{ always() }}
         run: docker logs mlbreak || true

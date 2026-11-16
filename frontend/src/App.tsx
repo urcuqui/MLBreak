@@ -7,6 +7,7 @@ import { Evidence } from "./pages/Evidence";
 import { ExperimentDetail } from "./pages/ExperimentDetail";
 import { Experiments } from "./pages/Experiments";
 import { InversionWorkspace } from "./pages/InversionWorkspace";
+import { MembershipWorkspace } from "./pages/MembershipWorkspace";
 import { Owasp } from "./pages/Owasp";
 import { PoisoningWorkspace } from "./pages/PoisoningWorkspace";
 import { Regression } from "./pages/Regression";
@@ -74,6 +75,8 @@ export function App() {
           <Route path="/lab/ml02/:tab" element={<PoisoningWorkspace />} />
           <Route path="/lab/ml03" element={<Navigate to="/lab/ml03/baseline" replace />} />
           <Route path="/lab/ml03/:tab" element={<InversionWorkspace />} />
+          <Route path="/lab/ml04" element={<Navigate to="/lab/ml04/baseline" replace />} />
+          <Route path="/lab/ml04/:tab" element={<MembershipWorkspace />} />
           <Route path="/evidence" element={<Evidence />} />
           <Route path="/regression" element={<Regression />} />
           <Route path="*" element={<div className="page"><h1>Not found</h1></div>} />

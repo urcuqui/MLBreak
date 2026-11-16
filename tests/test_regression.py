@@ -8,9 +8,11 @@ def test_declared_cases_load():
     cases = load_cases(PROJECT_ROOT / "security_cases")
     assert len(cases) >= 4
     assert {c.defended_evaluation for c in cases} == {"replay", "adaptive", "none"}
-    assert {c.owasp_id for c in cases} == {"ML01:2023", "ML02:2023", "ML03:2023"}
+    assert {c.owasp_id for c in cases} == {"ML01:2023", "ML02:2023", "ML03:2023", "ML04:2023"}
     ml03 = sorted(c.id for c in cases if c.owasp_id == "ML03:2023")
     assert ml03 == ["MLB-REG-014", "MLB-REG-015", "MLB-REG-016", "MLB-REG-017", "MLB-REG-018"]
+    ml04 = sorted(c.id for c in cases if c.owasp_id == "ML04:2023")
+    assert ml04 == [f"MLB-REG-{i:03d}" for i in range(19, 26)]
 
 
 def test_ml03_case_contract_is_validated():

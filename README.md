@@ -15,7 +15,8 @@ regression-testing traditional ML models — organised around the
 | **ML01:2023 Input Manipulation Attack** | ✅ implemented, **two scenarios**: 2-D classifier evasion, and spam-filter evasion with character-level adversarial text |
 | **ML02:2023 Data Poisoning Attack** | ✅ implemented: label flipping with retraining, kNN label sanitisation |
 | **ML03:2023 Model Inversion Attack** | ✅ implemented: private-attribute inversion of a risk-scoring service, compared with an auxiliary-only attacker; quantised and label-only output policies |
-| ML04–ML10:2023 | registry metadata only. **No lab, no placeholder attacks.** |
+| **ML04:2023 Membership Inference Attack** | ✅ implemented: training-set membership inference with a calibrated threshold attack and a shadow-model attack; regularisation, complexity reduction and output restriction evaluated by recalibrated attacks |
+| ML05–ML10:2023 | registry metadata only. **No lab, no placeholder attacks.** |
 
 The first release is a working vertical slice, not a scaffold. Every metric in the UI, CLI and
 reports comes from an experiment that actually ran.
@@ -41,6 +42,7 @@ Running `npm` in the repository root fails with `ENOENT … package.json`.
 | **2D Classifier Evasion** | ML01:2023 | FGSM, PGD (white-box), random search (black-box) | adversarial training, confidence rejection | MLB-REG-001…004 | [methodology](docs/methodology.md) |
 | **Spam Filter Evasion** | ML01:2023 | DeepWordBug-style character edits (black-box), under text-preservation constraints | text normalisation, adversarial data augmentation | MLB-REG-009…013 | [ml01-spam-filter-evasion](docs/ml01-spam-filter-evasion.md) |
 | **Label-Flipping Poisoning** | ML02:2023 | random / targeted label flipping + retraining | kNN label sanitisation (replay only — no adaptive poisoner) | MLB-REG-005…008 | [ml02-data-poisoning](docs/ml02-data-poisoning.md) |
+| **Training Set Membership Inference** | ML04:2023 | calibrated threshold attack (confidence / loss / max-confidence) and shadow models + meta-classifier, calibrated on the attacker's own reference models | leaf-size regularisation, complexity reduction, quantised / label-only output (recalibrated attacks) | MLB-REG-019…025 | [ml04-membership-inference](docs/ml04-membership-inference.md) |
 | **Private Attribute Inversion** | ML03:2023 | black-box candidate matching (bounded queries), vs an auxiliary-only attacker | quantised probability, label-only output (adaptive only — replay does not apply) | MLB-REG-014…018 | [ml03-model-inversion](docs/ml03-model-inversion.md) |
 
 Every lab follows the same four steps in the UI — **Baseline → Attack → Defend → Evidence & replay** — with the
@@ -170,6 +172,32 @@ High accuracy alone is never reported as leakage; output restriction is not a fo
 every other endpoint behind a bearer token. A sensitivity study (`mlbreak invert sensitivity`) tests each attacker
 assumption against the auxiliary-only baseline on identical targets.
 
+### ML04 · Training Set Membership Inference
+
+A fictional transaction-risk classifier is trained on 600 **synthetic** records with noisy labels
+([docs/ml04-membership-inference.md](docs/ml04-membership-inference.md)). Six disjoint populations (checked row by
+row) separate the victim's training and held-out data, the attacker's shadow and calibration data, the evaluation
+non-members and a decoy set:
+
+1. **Baseline**: training vs held-out accuracy (the generalisation gap) and the no-signal baseline.
+2. **Attack**: one query per candidate (250 members + 250 non-members). A threshold attack and a shadow-model attack
+   (8 shadow models + gradient-boosting meta-classifier) are calibrated **only** on reference models the attacker
+   trains on its own data; the evaluation candidates' membership stays with the evaluator. ROC curve, confusion
+   matrices, TPR at a calibrated 1% FPR and projected precision at low prevalence are reported.
+3. **Defend**: each defense is attacked by a **recalibrated** attack on the same candidates, with utility reported.
+
+| Seed 7, 500 candidates | Held-out acc. | Threshold AUC | Shadow AUC | Advantage (TPR − FPR) | Leakage |
+|---|---|---|---|---|---|
+| overfit random forest | 0.725 | 0.896 | 0.895 | +0.616 | claimed (p ≈ 2e-53) |
+| + leaf-size regularisation | 0.703 | 0.568 | 0.539 | +0.048 | residual (threshold p = 0.0045) |
+| + complexity reduction | 0.678 | 0.597 | 0.606 | +0.128 | claimed |
+| + 4-bucket quantisation | 0.725 | 0.817 | 0.826 | +0.608 | claimed — no significant reduction on any of 20 seeds |
+| + label-only output | 0.725 | 0.640 | 0.661 | +0.280 | claimed — correctness still leaks to a label-aware attacker |
+| negative control (decoy: no candidate is a member) | 0.702 | 0.498 | 0.505 | +0.000 | **not** claimed |
+
+A 20-seed study (`mlbreak member study --seeds 0-19`) backs the regression thresholds and documents where defenses
+fail. None of these defenses is differential privacy.
+
 ## Architecture
 
 ```mermaid
@@ -199,6 +227,7 @@ flowchart LR
 | `src/mlbreak/text/` | ML01 spam-filter evasion: bundled corpus, TF-IDF models, DeepWordBug-style attack, normalisation, augmentation, metrics, integrity |
 | `src/mlbreak/poisoning/` | ML02 data poisoning: label flipping, kNN sanitisation, metrics, integrity |
 | `src/mlbreak/inversion/` | ML03 model inversion: synthetic data, victim/auxiliary models, prediction service and output policies, attacker-side candidate matching, metrics, integrity |
+| `src/mlbreak/membership/` | ML04 membership inference: disjoint populations, victims, prediction service, threshold and shadow-model attacks, calibration, metrics, integrity, multi-seed study |
 | `frontend/` | React + TypeScript UI |
 | `security_cases/` | Declared defensive invariants |
 
@@ -250,10 +279,11 @@ UI development with hot reload: `make run` in one shell, `make dev` in another (
 ```bash
 make test           # pytest: unit + integration + API + regression + static security checks
 make verify         # security regression gate, non-zero exit on failure
-make demo           # all labs: ML01 2-D (baseline → attack → replay/adaptive → black-box → exact replay), ML01 spam, ML02, ML03
+make demo           # all labs: ML01 2-D (baseline → attack → replay/adaptive → black-box → exact replay), ML01 spam, ML02, ML03, ML04
 PYTHONPATH=src .venv/bin/python -m mlbreak demo --lab ml01-spam   # ML01 spam filter: attack → replay/adaptive per defense
 PYTHONPATH=src .venv/bin/python -m mlbreak demo --lab ml02   # ML02: clean → poison → defensive replay → replay
 PYTHONPATH=src .venv/bin/python -m mlbreak demo --lab ml03   # ML03: baseline → inversion → output policies → negative control → replay
+PYTHONPATH=src .venv/bin/python -m mlbreak demo --lab ml04   # ML04: baseline → membership inference → 4 defenses → controls → replay
 PYTHONPATH=src .venv/bin/python -m mlbreak demo --lab all
 ```
 
@@ -311,6 +341,7 @@ Evidence is written to `var/experiments/` (override with `MLBREAK_DATA_DIR`).
 * [ML01 spam-filter evasion: reference analysis, threat model, constraints, defenses, limitations](docs/ml01-spam-filter-evasion.md)
 * [ML02 data poisoning: threat model, metrics, assumptions, limitations](docs/ml02-data-poisoning.md)
 * [ML03 model inversion: threat model, attack, baseline comparison, output policies, privacy–utility, limitations](docs/ml03-model-inversion.md)
+* [ML04 membership inference: threat model, populations, calibration vs evaluation, threshold and shadow attacks, defenses, negative controls, limitations](docs/ml04-membership-inference.md)
 * [Threat model](docs/threat-model.md)
 * [Experimental methodology](docs/methodology.md)
 * [OWASP mapping](docs/owasp-mapping.md)

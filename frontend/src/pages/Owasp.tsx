@@ -9,6 +9,7 @@ const SCENARIO_LINKS: Record<string, { to: string; label: string }> = {
   "ml01-spam-filter-evasion": { to: "/lab/ml01/spam/baseline", label: "Spam Filter Evasion" },
   "ml02-moons-label-flip": { to: "/lab/ml02/baseline", label: "Label-flipping poisoning" },
   "ml03-private-attribute-inversion": { to: "/lab/ml03/baseline", label: "Private attribute inversion" },
+  "ml04-training-membership-inference": { to: "/lab/ml04/baseline", label: "Training set membership inference" },
 };
 
 export function Owasp() {

@@ -4,8 +4,9 @@ import { useParams } from "react-router-dom";
 import { api, evidenceLinks } from "../api";
 import { BoundaryPlot } from "../components/BoundaryPlot";
 import { Badge, ErrorBox, EvalBadge, ExpLink, Panel, RatioView, StatusBadge, Tile } from "../components/ui";
-import type { BoundaryResponse, DatasetResponse, ExperimentRecord, InversionRecord, PoisoningRecord, TextRecord } from "../types";
+import type { BoundaryResponse, DatasetResponse, ExperimentRecord, InversionRecord, MembershipRecord, PoisoningRecord, TextRecord } from "../types";
 import { InversionDetail } from "./InversionDetail";
+import { MembershipDetail } from "./MembershipDetail";
 import { PoisoningDetail } from "./PoisoningDetail";
 import { TextDetail } from "./TextDetail";
 
@@ -15,16 +16,18 @@ export function ExperimentDetail() {
   const [poisoning, setPoisoning] = useState<PoisoningRecord | null>(null);
   const [text, setText] = useState<TextRecord | null>(null);
   const [inversion, setInversion] = useState<InversionRecord | null>(null);
+  const [membership, setMembership] = useState<MembershipRecord | null>(null);
   const [dataset, setDataset] = useState<DatasetResponse | null>(null);
   const [boundary, setBoundary] = useState<BoundaryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setRec(null); setPoisoning(null); setText(null); setInversion(null); setError(null);
+    setRec(null); setPoisoning(null); setText(null); setInversion(null); setMembership(null); setError(null);
     api.anyExperiment(id).then((any) => {
       if ((any as PoisoningRecord).family === "poisoning") { setPoisoning(any as PoisoningRecord); return; }
       if ((any as TextRecord).family === "text_evasion") { setText(any as TextRecord); return; }
       if ((any as InversionRecord).family === "inversion") { setInversion(any as InversionRecord); return; }
+      if ((any as MembershipRecord).family === "membership") { setMembership(any as MembershipRecord); return; }
       const r = any as ExperimentRecord;
       setRec(r);
       const ctx = { model_id: r.model.model_id, seed: r.seed };
@@ -36,6 +39,7 @@ export function ExperimentDetail() {
 
   if (text) return <TextDetail key={text.experiment_id} rec={text} />;
   if (inversion) return <InversionDetail key={inversion.experiment_id} rec={inversion} />;
+  if (membership) return <MembershipDetail key={membership.experiment_id} rec={membership} />;
   if (poisoning) return <PoisoningDetail key={poisoning.experiment_id} rec={poisoning} />;
   if (!rec) return <div className="page"><ErrorBox error={error} />{!error && <p className="muted">Loading…</p>}</div>;
   const m = rec.metrics, links = evidenceLinks(rec.experiment_id);

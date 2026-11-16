@@ -51,6 +51,12 @@ class Limits:
     max_inversion_seed: int = 100_000      # dataset/model seed (bounded, see docs/ml03-model-inversion.md)
     max_session_queries: int = 800         # total victim queries per interactive attack session
     max_inversion_sessions: int = 500      # attack sessions per evidence root (no reset; evaluator clears the store)
+    # ML04 membership inference
+    max_membership_seed: int = 100_000     # dataset/model seed
+    max_membership_query_budget: int = 1200  # victim queries per experiment (one per candidate record)
+    max_shadow_models: int = 16            # shadow models trained by the attacker per experiment
+    max_reference_models: int = 4          # attacker reference models used to calibrate operating thresholds
+    max_study_seeds: int = 20              # seeds per ML04 multi-seed study
     # Wall-clock limit for a whole security regression suite (cases not started in time FAIL).
     max_regression_seconds: float = 600.0
 

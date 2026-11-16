@@ -1,4 +1,4 @@
-"""Shared structure for every experiment report (ML01 2-D, ML01 spam filter, ML02 poisoning, ML03 inversion).
+"""Shared structure for every experiment report (ML01 2-D, ML01 spam filter, ML02, ML03 inversion, ML04 membership).
 
 Every report has the same seven sections, in this order, so evidence reads the same across laboratories:
 
@@ -59,6 +59,16 @@ THREAT_MODELS: dict[str, dict[str, str]] = {
         "out of scope": "membership inference (ML04), model extraction (ML05), reconstruction of training records, "
                         "imperfect knowledge of public features, formal privacy guarantees",
         "details": "docs/ml03-model-inversion.md#2-threat-model",
+    },
+    "ml04-training-membership-inference": {
+        "asset": "confidentiality of training-set membership: whether a given record was used to train the model",
+        "trust boundary": "prediction service → output consumer (released outputs for chosen records are visible to "
+                          "the attacker; the training set, its indices, the fitted model and evaluator evidence are not)",
+        "attacker goal": "decide for each candidate record whether it was a training member, better than the "
+                         "no-signal baseline, at operating points calibrated on the attacker's own data",
+        "out of scope": "attribute inversion (ML03), model extraction (ML05), reconstruction of training records, "
+                        "attackers without auxiliary data from the training distribution, formal privacy guarantees",
+        "details": "docs/ml04-membership-inference.md#2-threat-model",
     },
 }
 
@@ -137,7 +147,27 @@ def limitations(rec) -> list[str]:
                        "is a lower bound for this policy.")
         out.append("Targets are held-out records (not training members); results do not cover reconstruction of "
                    "training data or membership.")
-    if not kind and ev in ("clean", "attack", "clean_training", "poisoning", "inversion"):
+    if scen == "ml04-training-membership-inference":
+        if ev != "clean":
+            out.append("Membership leakage is measured on the selected synthetic candidates of one seed by two specific attacks "
+                       "(calibrated threshold and shadow models); both are LOWER bounds on what a stronger attacker "
+                       "(e.g. per-example likelihood-ratio attacks with many reference models) could achieve.")
+            out.append("The attacker is assumed to know the training recipe, the training-set size and to hold "
+                       "same-distribution auxiliary data. A weaker attacker may do worse; a defense that relies on the "
+                       "recipe being secret is not evaluated here.")
+            out.append("TPR at a low FPR is estimated with a threshold calibrated on the attacker's reference models; "
+                       "the realised evaluation FPR is reported next to it and can exceed the target.")
+        if kind == "output_restriction":
+            out.append("Output restriction is not differential privacy (deterministic release, ε = ∞). Label-only "
+                       "output still leaks membership to an attacker who knows the label, through the training/test "
+                       "accuracy gap (MLB-REG-025, docs/ml04-membership-inference.md §8).")
+        if kind in ("regularization", "complexity_reduction"):
+            out.append("Regularisation / complexity reduction reduce the generalisation gap that these attacks use; "
+                       "they provide no formal bound, and residual leakage can remain significant (see the multi-seed "
+                       "study in docs/ml04-membership-inference.md).")
+        if ev == "clean":
+            out.append("The generalisation gap indicates overfitting but is not itself a membership-inference result.")
+    if not kind and ev in ("clean", "attack", "clean_training", "poisoning", "inversion", "membership_inference"):
         out.append("No defense was evaluated in this experiment.")
     return out
 

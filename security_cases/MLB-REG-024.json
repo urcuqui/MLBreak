@@ -1,0 +1,25 @@
+{
+  "id": "MLB-REG-024",
+  "family": "membership",
+  "title": "Membership evidence integrity, query budgets and deterministic replay",
+  "owasp_id": "ML04:2023",
+  "model_id": "random-forest-overfit",
+  "seed": 7,
+  "defense": {"kind": "complexity_reduction", "max_depth": 4, "n_estimators": 30},
+  "defended_evaluation": "adaptive",
+  "invariants": [
+    {"id": "evidence-consistent", "kind": "security", "posture": "undefended", "metric": "evidence_consistency", "op": "==", "value": 1.0,
+     "description": "Both records must pass integrity + lineage verification (scores, thresholds re-derived from calibration data, decisions, metrics) and the attack must replay bit-identically."},
+    {"id": "budget-enforced", "kind": "security", "posture": "undefended", "metric": "budget_enforcement", "op": "==", "value": 1.0,
+     "description": "With a query budget one below the number of candidates the counting oracle must refuse the batch (failed record, QueryBudgetExceeded) and that failed record must verify."},
+    {"id": "one-query-per-candidate", "kind": "security", "posture": "undefended", "metric": "query_budget_utilisation", "op": "<=", "value": 1.0,
+     "description": "Queries must not exceed the budget (observed 500 of 1200: one per candidate; shadow and reference models never query the victim)."},
+    {"id": "defended-budget", "kind": "security", "posture": "defended", "metric": "query_budget_utilisation", "op": "<=", "value": 1.0,
+     "description": "The recalibrated attack against the reduced forest uses the same budget."},
+    {"id": "complexity-reduces", "kind": "security", "posture": "defended", "metric": "shadow_defense_reduction_p_value", "op": "<=", "value": 0.001,
+     "description": "Depth-4, 30-tree forests must significantly reduce correct shadow-attack decisions on the same candidates (observed p ≈ 4e-33; significant on 20/20 seeds)."},
+    {"id": "complexity-utility", "kind": "utility", "posture": "defended", "metric": "test_accuracy", "op": ">=", "value": 0.65,
+     "description": "Held-out accuracy of the reduced forest must stay ≥ 0.65 (observed 0.678 vs 0.725; 20-seed utility drop up to 4.7 points)."}
+  ],
+  "rationale": "Every ML04 number is only checkable if budgets, stored calibration data, decisions and metrics agree and reproduce exactly. The complexity-reduction defense is exercised here so that a defended record's lineage is verified too."
+}

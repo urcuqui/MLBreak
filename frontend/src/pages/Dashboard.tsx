@@ -20,6 +20,7 @@ export function Dashboard() {
           <Link className="btn primary" to="/lab/ml01/baseline">ML01 evasion lab →</Link>
           <Link className="btn primary" to="/lab/ml02/baseline">ML02 poisoning lab →</Link>
           <Link className="btn primary" to="/lab/ml03/baseline">ML03 inversion lab →</Link>
+          <Link className="btn primary" to="/lab/ml04/baseline">ML04 membership lab →</Link>
         </div>
       </div>
       <VulnerableBanner />

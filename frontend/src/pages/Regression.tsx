@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { Badge, ErrorBox, ExpLink, Panel } from "../components/ui";
-import type { InversionCase, PoisoningCase, RegressionReport, SecurityCase, TextCase } from "../types";
+import type { InversionCase, MembershipCase, PoisoningCase, RegressionReport, SecurityCase, TextCase } from "../types";
 
 const KIND_HELP: Record<string, string> = {
   security: "the defense must hold",
@@ -10,7 +10,7 @@ const KIND_HELP: Record<string, string> = {
 };
 
 export function Regression() {
-  const [cases, setCases] = useState<(SecurityCase | PoisoningCase | TextCase | InversionCase)[]>([]);
+  const [cases, setCases] = useState<(SecurityCase | PoisoningCase | TextCase | InversionCase | MembershipCase)[]>([]);
   const [report, setReport] = useState<RegressionReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,7 +43,12 @@ export function Regression() {
         const r = result(c.id);
         return (
           <Panel key={c.id} title={`${c.id} — ${c.title}`}
-            subtitle={"family" in c && c.family === "inversion"
+            subtitle={"family" in c && c.family === "membership"
+              ? <>{c.owasp_id} · membership inference ({c.model_id}, seed {c.seed}) · threshold on {c.attack.threshold_signal.replace(/_/g, " ")}
+                  {" "}+ {c.attack.n_shadow_models} shadow models{c.attack.label_known ? "" : ", label unknown"} · {c.defense
+                  ? <>defense {c.defense.kind} · defended evaluation: <strong>recalibrated attack</strong></>
+                  : <>no defense (undefended invariants only)</>}</>
+              : "family" in c && c.family === "inversion"
               ? <>{c.owasp_id} · model inversion ({c.model_id}) · candidate matching, ≤ {c.attack.query_budget} queries/target,
                   ties → {c.attack.tie_policy} · {c.defense ? <>output policy {c.defense.kind}{c.defense.kind === "quantized_probability"
                   ? ` (${c.defense.bins} buckets)` : ""} · defended evaluation: <strong>{c.defended_evaluation}</strong></>

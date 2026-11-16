@@ -23,6 +23,7 @@ export function Experiments() {
           <option value="clean_training">ML02 clean training</option><option value="poisoning">ML02 poisoning</option>
           <option value="poisoning_replay">ML02 defense replay</option>
           <option value="inversion">ML03 inversion</option><option value="adaptive_inversion">ML03 adaptive inversion</option>
+          <option value="membership_inference">ML04 membership inference</option><option value="adaptive_membership_inference">ML04 recalibrated (defense)</option>
         </select>}>
         <div className="table-wrap"><table className="table">
           <thead><tr><th>Experiment</th><th>Created (UTC)</th><th>Type</th><th>Status</th><th>Model</th><th>Attack</th>
@@ -34,13 +35,17 @@ export function Experiments() {
               <td className="mono small">{e.model_id}</td>
               <td className="small">{!e.attack ? "—" : e.family === "text_evasion"
                 ? `${e.attack} · ≤ ${e.max_edit_distance} edits · ${e.query_budget} queries`
-                : e.family === "inversion" ? `${e.attack} · ${e.output_policy}`
+                : e.family === "inversion" || e.family === "membership" ? `${e.attack} · ${e.output_policy}`
                 : e.family === "poisoning"
                 ? `${e.attack} · ${Math.round((e.poison_fraction ?? 0) * 100)}%${e.target_class != null ? ` · class ${e.target_class}` : ""}`
                 : `${e.attack} · ${e.norm} · ε=${e.epsilon}`}</td>
               <td className="small">{e.defense ?? "—"}</td>
               <td className="num">{pct(e.clean_accuracy)}</td>
-              <td className="num">{e.family === "inversion"
+              <td className="num">{e.family === "membership"
+                ? (e.membership_auc == null ? "—"
+                  : <span title="ML04 has no evasion 'attack success': membership ROC AUC (threshold attack) and advantage TPR − FPR">
+                      AUC {e.membership_auc.toFixed(3)} (adv. {e.membership_advantage! >= 0 ? "+" : ""}{e.membership_advantage?.toFixed(3)})</span>)
+                : e.family === "inversion"
                 ? (e.attribute_inference_accuracy == null ? "—"
                   : <span title="ML03 has no evasion 'attack success': attribute-inference accuracy and its advantage over the auxiliary-only attacker">
                       {pct(e.attribute_inference_accuracy)} inferred ({e.inference_advantage! >= 0 ? "+" : ""}{pct(e.inference_advantage)} vs aux.)</span>)

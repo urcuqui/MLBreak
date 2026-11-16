@@ -9,7 +9,7 @@ Taxonomy: **OWASP Machine Learning Security Top 10, 2023 edition**
 | ML01:2023 | Input Manipulation Attack | **Implemented** (2 scenarios) | `ml01-moons-evasion` (2-D numerical evasion), `ml01-spam-filter-evasion` (character-level text evasion) |
 | ML02:2023 | Data Poisoning Attack | **Implemented** | `ml02-moons-label-flip` |
 | ML03:2023 | Model Inversion Attack | **Implemented** | `ml03-private-attribute-inversion` |
-| ML04:2023 | Membership Inference Attack | Not implemented | — |
+| ML04:2023 | Membership Inference Attack | **Implemented** | `ml04-training-membership-inference` |
 | ML05:2023 | Model Theft | Not implemented | — |
 | ML06:2023 | AI Supply Chain Attacks | Not implemented | — |
 | ML07:2023 | Transfer Learning Attack | Not implemented | — |
@@ -19,6 +19,19 @@ Taxonomy: **OWASP Machine Learning Security Top 10, 2023 edition**
 
 A category is marked implemented only when it has a registered scenario, passing acceptance tests and
 at least one passing security regression case. `tests/test_regression.py` enforces this.
+
+## ML04 coverage
+
+| OWASP ML04 element | MLBreak |
+|---|---|
+| Attacker infers whether a record was in the training set from model outputs | One black-box query per candidate; calibrated threshold attack and shadow-model attack |
+| Overfitting increases the risk | Intentionally overfitting random forest vs L2 logistic regression; generalisation gap reported |
+| Prevention: regularisation / simpler models | Leaf-size regularisation (or L2 strength), complexity reduction — each evaluated by a recalibrated attack |
+| Prevention: restrict outputs | Quantised probability and label-only output (also recalibrated); documented to fail against a label-aware attacker |
+| Prevention: differential privacy | Not implemented; output restriction is explicitly not DP (see [ml04-membership-inference.md](ml04-membership-inference.md#8-defenses-privacyutility-trade-off-and-where-defenses-fail)) |
+
+Leakage is claimed only from the final evaluation population with thresholds calibrated on the attacker's own
+reference models; a decoy victim is the negative control. Details: [ml04-membership-inference.md](ml04-membership-inference.md).
 
 ## ML03 coverage
 

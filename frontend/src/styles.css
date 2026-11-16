@@ -121,7 +121,7 @@ details summary { cursor: pointer; color: var(--text-2); }
   .form { grid-template-columns: 1fr; } .span-2 { grid-column: span 1; }
 }
 .lab-switch { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
-.segmented { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; }
+.segmented { display: inline-flex; flex-wrap: wrap; max-width: 100%; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; }
 .seg { padding: 6px 12px; color: var(--text-2); background: var(--surface-2); white-space: nowrap; }
 .seg + .seg { border-left: 1px solid var(--border-strong); }
 .seg:hover { text-decoration: none; color: var(--text); }

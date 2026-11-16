@@ -12,21 +12,24 @@ from typing import Any
 import pandas as pd
 
 from .inversion.schemas import InversionRecord
+from .membership.schemas import MembershipRecord
 from .poisoning.schemas import PoisoningRecord
 from .text.schemas import TextEvasionRecord
 from .schemas import EXPERIMENT_ID_PATTERN, ExperimentRecord
 
-AnyRecord = ExperimentRecord | PoisoningRecord | TextEvasionRecord | InversionRecord
+AnyRecord = ExperimentRecord | PoisoningRecord | TextEvasionRecord | InversionRecord | MembershipRecord
 
 
 def parse_record(data: dict[str, Any]) -> AnyRecord:
-    """Validate a stored record against the schema of its family (ML01 2-D / text evasion, ML02 poisoning)."""
+    """Validate a stored record against the schema of its family (ML01 2-D / text, ML02, ML03, ML04)."""
     if data.get("family") == "text_evasion" or str(data.get("schema_version", "")).startswith("mlbreak.text-evasion/"):
         return TextEvasionRecord.model_validate(data)
     if data.get("family") == "poisoning" or str(data.get("schema_version", "")).startswith("mlbreak.poisoning/"):
         return PoisoningRecord.model_validate(data)
     if data.get("family") == "inversion" or str(data.get("schema_version", "")).startswith("mlbreak.inversion/"):
         return InversionRecord.model_validate(data)
+    if data.get("family") == "membership" or str(data.get("schema_version", "")).startswith("mlbreak.membership/"):
+        return MembershipRecord.model_validate(data)
     return ExperimentRecord.model_validate(data)
 
 _ID_RE = re.compile(EXPERIMENT_ID_PATTERN)
@@ -85,6 +88,8 @@ class EvidenceStore:
             return text_csv(rec)
         if isinstance(rec, InversionRecord):
             return inversion_csv(rec)
+        if isinstance(rec, MembershipRecord):
+            return membership_csv(rec)
         rows = []
         for s in rec.samples:
             row = s.model_dump()
@@ -157,6 +162,30 @@ def inversion_csv(rec: InversionRecord) -> str:
     return buf.getvalue()
 
 
+def membership_csv(rec: MembershipRecord) -> str:
+    """One row per candidate: attacker-side columns (observation, scores, decisions), then evaluator-only truth."""
+    rows = []
+    for c in rec.candidates:
+        d: dict[str, Any] = {"candidate_id": c.candidate_id}
+        if c.observation is not None:
+            d.update({f"x_{j}": v for j, v in enumerate(c.observation.features)})
+            d.update(label_given=c.observation.label, released_output=c.observation.released_output,
+                     query_index=c.observation.query_index)
+        for a in ("threshold", "shadow"):
+            dec = getattr(c, a)
+            if dec is not None:
+                d.update({f"{a}_score": dec.score, f"{a}_member_balanced": dec.member_balanced,
+                          f"{a}_member_low_fpr": dec.member_low_fpr})
+            if c.undefended_correct is not None:
+                d[f"{a}_undefended_correct"] = c.undefended_correct.get(a)
+        d.update(eval_group=c.truth.group, eval_in_training=c.truth.in_training, eval_population=c.truth.population,
+                 eval_population_index=c.truth.population_index)
+        rows.append(d)
+    buf = io.StringIO()
+    pd.DataFrame(rows).to_csv(buf, index=False)
+    return buf.getvalue()
+
+
 def render_any(rec: AnyRecord, verification: dict | None = None) -> str:
     """Render the report of any record family with the shared seven-section structure.
 
@@ -169,6 +198,9 @@ def render_any(rec: AnyRecord, verification: dict | None = None) -> str:
     if isinstance(rec, InversionRecord):
         from .inversion.report import render_inversion_markdown
         return render_inversion_markdown(rec, verification)
+    if isinstance(rec, MembershipRecord):
+        from .membership.report import render_membership_markdown
+        return render_membership_markdown(rec, verification)
     if isinstance(rec, PoisoningRecord):
         from .poisoning.report import render_poisoning_markdown
         return render_poisoning_markdown(rec, verification)
@@ -182,6 +214,8 @@ def summarize(rec: dict[str, Any]) -> dict[str, Any]:
         return _summarize_text(rec)
     if rec.get("family") == "inversion":
         return _summarize_inversion(rec)
+    if rec.get("family") == "membership":
+        return _summarize_membership(rec)
     m = rec.get("metrics") or {}
     asr = m.get("attack_success_rate") or {}
     return {
@@ -253,6 +287,29 @@ def _summarize_inversion(rec: dict[str, Any]) -> dict[str, Any]:
         "attribute_inference_accuracy": acc.get("value"),
         "baseline_inference_accuracy": (m.get("baseline_inference_accuracy") or {}).get("value"),
         "inference_advantage": (m.get("inference_advantage") or {}).get("value"),
+        "parent_experiment_id": rec.get("parent_experiment_id"), "replay_of": rec.get("replay_of"),
+        "schema_version": rec.get("schema_version"), "error": rec.get("error"),
+    }
+
+
+def _summarize_membership(rec: dict[str, Any]) -> dict[str, Any]:
+    m = rec.get("metrics") or {}
+    ac = rec.get("attack_config") or {}
+    v = lambda k: (m.get(k) or {}).get("value")  # noqa: E731
+    return {
+        "experiment_id": rec["experiment_id"], "created_at": rec["created_at"], "mode": rec["mode"],
+        "evaluation": rec["evaluation"], "status": rec["status"], "scenario_id": rec["scenario_id"],
+        "owasp_id": rec["owasp"]["id"], "family": "membership", "model_id": rec["model"].get("model_id"),
+        "attack": (f"threshold:{ac['threshold_signal']}+shadow:{ac['n_shadow_models']}" if ac else None),
+        "epsilon": None, "norm": None, "output_policy": (rec.get("output_policy") or {}).get("kind"),
+        "defense": (rec.get("defense_config") or {}).get("kind"),
+        "n_samples": len(rec.get("candidates") or []),
+        "clean_accuracy": v("test_accuracy"),
+        "adversarial_accuracy": None, "robust_accuracy": None, "abstention_rate_adversarial": None,
+        # ML04 has no evasion "attack success": the list shows the membership AUC / advantage of the threshold attack.
+        "attack_success_rate": None, "attack_success": None,
+        "membership_auc": v("threshold_roc_auc"), "shadow_membership_auc": v("shadow_roc_auc"),
+        "membership_advantage": v("threshold_membership_advantage"), "generalization_gap": v("generalization_gap"),
         "parent_experiment_id": rec.get("parent_experiment_id"), "replay_of": rec.get("replay_of"),
         "schema_version": rec.get("schema_version"), "error": rec.get("error"),
     }

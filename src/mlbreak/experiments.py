@@ -105,6 +105,20 @@ SCENARIOS: dict[str, Scenario] = {
             "with new adaptive attacks."
         ),
     ),
+    "ml04-training-membership-inference": Scenario(
+        scenario_id="ml04-training-membership-inference",
+        title="Training-set membership inference against a risk-classification service",
+        owasp_id="ML04:2023",
+        dataset_id="synthetic-transaction-risk-v1",
+        intentionally_vulnerable=True,
+        description=(
+            "A fictional transaction-risk classifier (an intentionally overfitting random forest, or a regularised "
+            "logistic regression) releases prediction scores. Knowing a candidate record and the service's output for "
+            "it, the attacker decides whether the record was in the training set, with a calibrated threshold attack "
+            "and a shadow-model attack trained only on its own auxiliary data. Regularisation, complexity reduction "
+            "and output restriction are evaluated with recalibrated attacks."
+        ),
+    ),
     "ml02-moons-label-flip": Scenario(
         scenario_id="ml02-moons-label-flip",
         title="Label-flipping poisoning of the training set, with retraining",
@@ -121,7 +135,7 @@ SCENARIOS: dict[str, Scenario] = {
 
 
 def verify_any_record(rec) -> dict[str, Any]:
-    """Record-level integrity check, dispatched on the record family (ML01 2-D, ML01 text, ML02, ML03)."""
+    """Record-level integrity check, dispatched on the record family (ML01 2-D, ML01 text, ML02, ML03, ML04)."""
     family = getattr(rec, "family", None)
     if family == "text_evasion":
         from .text.integrity import verify_text_record
@@ -132,6 +146,9 @@ def verify_any_record(rec) -> dict[str, Any]:
     if family == "inversion":
         from .inversion.integrity import verify_inversion_record
         return verify_inversion_record(rec)
+    if family == "membership":
+        from .membership.integrity import verify_membership_record
+        return verify_membership_record(rec)
     return verify_record(rec)
 
 
@@ -304,6 +321,9 @@ class ExperimentEngine:
         # ML03 model inversion (private-attribute reconstruction): same gate/deadline/store; own records and metrics.
         from .inversion.engine import InversionLab
         self.inversion = InversionLab(self)
+        # ML04 membership inference: same gate/deadline/store; own records and metrics.
+        from .membership.engine import MembershipLab
+        self.membership = MembershipLab(self)
 
     # ------------------------------------------------------------------ API
     def run_baseline(self, req: BaselineRequest, replay_of: str | None = None) -> ExperimentRecord:
@@ -393,6 +413,8 @@ class ExperimentEngine:
             return self.text.replay(original)
         if getattr(original, "family", None) == "inversion":  # ML03 model inversion
             return self.inversion.replay(original)
+        if getattr(original, "family", None) == "membership":  # ML04 membership inference
+            return self.membership.replay(original)
         if not isinstance(original, ExperimentRecord):  # ML02 poisoning record
             return self.poisoning.replay(original)
         if original.status != "completed":

@@ -30,6 +30,7 @@ runs; routes are grouped by tag. This page summarises the contract and gives exa
 | `ml01-spam` | `POST /api/experiments/text/baseline`, `/text/attack`, `/text/defend`; `POST /api/text/classify`; `GET /api/text/messages` |
 | `ml02` | `POST /api/experiments/poisoning/baseline`, `/poisoning/attack`, `/poisoning/defend`; `GET /api/experiments/{id}/boundary` |
 | `ml03` (evaluator) | `POST /api/experiments/inversion/baseline`, `/inversion/attack`, `/inversion/defend`; `POST /api/inversion/targets` (unbudgeted preview); `POST /api/inversion/sessions` (issue a session); `GET /api/inversion/sessions/{id}/score`; `POST /api/inversion/sensitivity`, `GET /api/inversion/sensitivity/{id}`, `/verify` |
+| `ml04` (evaluator) | `POST /api/experiments/membership/baseline`, `/membership/attack`, `/membership/defend`; `GET /api/membership/independence/{experiment_id}`; `POST /api/membership/study`, `GET /api/membership/study/{report_id}`, `/verify`. Records contain the membership ground truth; there is **no attacker-facing ML04 endpoint** |
 | `ml03-attacker` | `GET /api/inversion/sessions/{id}`; `POST /api/inversion/sessions/{id}/query` (`{target_index, candidate}`, counted); `POST /api/inversion/sessions/{id}/submit` (once) |
 | `evidence` | `GET /api/experiments`, `/api/experiments/{id}`, `/{id}/verify`, `/{id}/evidence.json`, `/{id}/report.md`, `/{id}/samples.csv`; `POST /api/experiments/{id}/replay` |
 | `regression` | `GET /api/regression/cases`, `/api/regression/latest`; `POST /api/regression/run` |
@@ -37,7 +38,9 @@ runs; routes are grouped by tag. This page summarises the contract and gives exa
 
 Adaptive attacks use the `attack` endpoint of their lab with `target_defense` and `parent_experiment_id`;
 non-adaptive replay uses the lab's `defend` endpoint. ML02 has no adaptive evaluation. In ML03 the `defend`
-endpoint runs a NEW adaptive inversion against an output policy (there is no non-adaptive replay).
+endpoint runs a NEW adaptive inversion against an output policy (there is no non-adaptive replay). In ML04 the
+`defend` endpoint retrains the victim with the defense (or applies the output policy) and runs a RECALIBRATED attack
+on the parent's candidates.
 
 ## Examples
 
@@ -63,6 +66,11 @@ I=$(curl -s -X POST $B/api/experiments/inversion/attack -H 'Content-Type: applic
       | python3 -c 'import json,sys; print(json.load(sys.stdin)["experiment_id"])')
 curl -s -X POST $B/api/experiments/inversion/defend -H 'Content-Type: application/json' \
      -d "{\"parent_experiment_id\": \"$I\", \"output_policy\": {\"kind\": \"label_only\"}}" > /dev/null
+# ML04: membership inference on the overfit forest, then a recalibrated attack against regularisation
+M=$(curl -s -X POST $B/api/experiments/membership/attack -H 'Content-Type: application/json' -d '{}' \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin)["experiment_id"])')
+curl -s -X POST $B/api/experiments/membership/defend -H 'Content-Type: application/json' \
+     -d "{\"parent_experiment_id\": \"$M\", \"defense\": {\"kind\": \"regularization\", \"min_samples_leaf\": 25}}" > /dev/null
 # ML02: targeted label flipping
 curl -s -X POST $B/api/experiments/poisoning/attack -H 'Content-Type: application/json' \
      -d '{"poison": {"strategy": "targeted", "fraction": 0.1, "target_class": 1, "selection": "boundary"}}'

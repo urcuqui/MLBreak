@@ -1,12 +1,13 @@
 # Evidence across laboratories
 
-All four scenarios produce evidence the same way, while keeping their own metric definitions.
+All five scenarios produce evidence the same way, while keeping their own metric definitions.
 
 | Scenario | Record schema | Per-sample evidence | Specialised metrics |
 |---|---|---|---|
 | ML01 · 2D Classifier Evasion | `mlbreak.experiment/v2` | perturbed inputs, predictions, ‖δ‖, outcome partition | attack success, adversarial / robust accuracy, abstention |
 | ML01 · Spam Filter Evasion | `mlbreak.text-evasion/v1` | original/adversarial text, edit script, queries, constraint checks | attack success within constraints, accuracy under attack, query effort |
 | ML03 · Private Attribute Inversion | `mlbreak.inversion/v1` | attacker trace (public features, observed output, queries and responses, rule, inference) + evaluation-only ground truth; service rows | attribute-inference accuracy, advantage over the auxiliary-only attacker with paired test, ambiguity, queries, output-policy utility |
+| ML04 · Training Set Membership Inference | `mlbreak.membership/v1` | attacker observation (features, optional label, released output) + both attacks' scores and decisions; evaluator-only ground truth (group, real membership, source population); calibration data and reference-model / shadow-model provenance; victim utility rows | ROC AUC with one-sided Mann–Whitney test, advantage, accuracy / precision / recall, TPR at a calibrated low FPR (with status), projected precision by prevalence, generalisation gap, paired defense reduction |
 | ML02 · Label-Flipping Poisoning | `mlbreak.poisoning/v1` | training rows (true/observed/sanitised labels, flags), test rows | attack success, target-class recall, detection precision/recall, recovery |
 
 Every ratio carries numerator, denominator, population and definition; an empty denominator is `null`, never 0.

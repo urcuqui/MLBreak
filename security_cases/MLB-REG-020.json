@@ -1,0 +1,20 @@
+{
+  "id": "MLB-REG-020",
+  "family": "membership",
+  "title": "The threshold attack calibrates without using final evaluation membership labels",
+  "owasp_id": "ML04:2023",
+  "model_id": "random-forest-overfit",
+  "seed": 7,
+  "defended_evaluation": "none",
+  "invariants": [
+    {"id": "independent-of-evaluation-labels", "kind": "security", "posture": "undefended", "metric": "attacker_independence", "op": "==", "value": 1.0,
+     "description": "Re-running the attack with the evaluation ground truth permuted must give bit-identical released outputs, scores, thresholds, calibration and decisions, and the calibration and shadow populations must share no record with the victim's training set or the candidates."},
+    {"id": "populations-disjoint", "kind": "security", "posture": "undefended", "metric": "population_disjointness", "op": "==", "value": 1.0,
+     "description": "No record may be duplicated or shared between the six populations (row-level SHA-256 check)."},
+    {"id": "low-fpr-threshold-transfers", "kind": "security", "posture": "undefended", "metric": "threshold_fpr_at_low_fpr", "op": "<=", "value": 0.03,
+     "description": "The threshold calibrated for FPR ≤ 1% on reference models must not exceed 3% FPR on the unseen evaluation non-members (observed 1/250 = 0.4%); an evaluation-optimal threshold is never used."},
+    {"id": "balanced-point-transfers", "kind": "attack_canary", "posture": "undefended", "metric": "threshold_membership_accuracy", "op": ">=", "value": 0.75,
+     "description": "The balanced threshold chosen on calibration data alone must still classify ≥ 75% of evaluation candidates correctly (observed 404/500 = 80.8%)."}
+  ],
+  "rationale": "Thresholds chosen on the evaluation ROC curve would overstate leakage. The attack's thresholds come only from reference models trained by the attacker on its own calibration population; this case checks that executably (ground-truth permutation) and that the calibrated operating point transfers."
+}

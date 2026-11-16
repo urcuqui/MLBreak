@@ -292,7 +292,7 @@ def test_api_validation(client):
     assert "## 7. Integrity verification" in client.get(f"/api/experiments/{eid}/report.md").text
     cats = {c["code"]: c for c in client.get("/api/owasp").json()["categories"]}
     assert cats["ML03"]["lab_status"] == "implemented"
-    assert cats["ML04"]["lab_status"] == "not_implemented" and cats["ML05"]["lab_status"] == "not_implemented"
+    assert cats["ML05"]["lab_status"] == "not_implemented"  # ML04 is covered by tests/test_membership.py
 
 
 # ------------------------------------------------------------------ UI contract

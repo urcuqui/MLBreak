@@ -3,7 +3,8 @@ import type {
   ExperimentSummary, KnnDefense, LabelFlipConfig, ModelKey, OwaspCategory, PoisoningCase, PoisoningRecord,
   RegressionReport, ReplayResult, SecurityCase, VerifyReport, ClassifyResult, TextAttackConfig, TextDefense,
   TextMessage, TextModelId, TextRecord, TextCase, InversionCase, InversionAttackConfig, InversionModelId, InversionRecord,
-  InversionTargetsView, OutputPolicy, RestrictivePolicy, TargetSelection,
+  InversionTargetsView, OutputPolicy, RestrictivePolicy, TargetSelection, MembershipRecord, MembershipModelId,
+  MembershipAttackConfig, MembershipDefense, MembershipCase, CandidateSelection,
 } from "./types";
 
 export class ApiError extends Error {
@@ -92,7 +93,7 @@ export const api = {
     return r.text();
   },
   verify: (id: string) => req<VerifyReport>(`/api/experiments/${encodeURIComponent(id)}/verify`),
-  anyExperiment: (id: string) => req<ExperimentRecord | PoisoningRecord | TextRecord | InversionRecord>(`/api/experiments/${encodeURIComponent(id)}`),
+  anyExperiment: (id: string) => req<ExperimentRecord | PoisoningRecord | TextRecord | InversionRecord | MembershipRecord>(`/api/experiments/${encodeURIComponent(id)}`),
   // ML02 data poisoning
   poisonBaseline: (c: Ctx) => post<PoisoningRecord>("/api/experiments/poisoning/baseline", c),
   poisonAttack: (c: Ctx, poison: LabelFlipConfig) =>
@@ -126,7 +127,14 @@ export const api = {
     post<InversionRecord>("/api/experiments/inversion/attack", { model_id, seed, targets, attack }),
   inversionDefend: (parent_experiment_id: string, output_policy: RestrictivePolicy) =>
     post<InversionRecord>("/api/experiments/inversion/defend", { parent_experiment_id, output_policy }),
-  cases: () => req<(SecurityCase | PoisoningCase | TextCase | InversionCase)[]>("/api/regression/cases"),
+  // ML04 membership inference (evaluator-facing records)
+  membershipBaseline: (model_id: MembershipModelId, seed: number, candidates: CandidateSelection) =>
+    post<MembershipRecord>("/api/experiments/membership/baseline", { model_id, seed, candidates }),
+  membershipAttack: (model_id: MembershipModelId, seed: number, candidates: CandidateSelection, attack: MembershipAttackConfig) =>
+    post<MembershipRecord>("/api/experiments/membership/attack", { model_id, seed, candidates, attack }),
+  membershipDefend: (parent_experiment_id: string, defense: MembershipDefense) =>
+    post<MembershipRecord>("/api/experiments/membership/defend", { parent_experiment_id, defense }),
+  cases: () => req<(SecurityCase | PoisoningCase | TextCase | InversionCase | MembershipCase)[]>("/api/regression/cases"),
   runRegression: () => post<RegressionReport>("/api/regression/run", {}),
   latestRegression: () => req<RegressionReport | null>("/api/regression/latest"),
 };

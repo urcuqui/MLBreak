@@ -1,0 +1,19 @@
+{
+  "id": "MLB-REG-021",
+  "family": "membership",
+  "title": "The shadow-model attack learns from auxiliary membership data only",
+  "owasp_id": "ML04:2023",
+  "model_id": "random-forest-overfit",
+  "seed": 7,
+  "attack": {"label_known": false, "threshold_signal": "max_confidence"},
+  "defended_evaluation": "none",
+  "invariants": [
+    {"id": "independent-of-victim-membership", "kind": "security", "posture": "undefended", "metric": "attacker_independence", "op": "==", "value": 1.0,
+     "description": "Shadow training labels come from the attacker's own shadow splits: permuting the evaluation ground truth must not change the shadow models, the meta-classifier or any decision, and the shadow population must be disjoint from the victim's data."},
+    {"id": "shadow-learns-without-labels", "kind": "attack_canary", "posture": "undefended", "metric": "shadow_roc_auc", "op": ">=", "value": 0.8,
+     "description": "Without knowing any candidate's label, the meta-classifier trained only on shadow outputs must reach AUC ≥ 0.80 on the victim (observed 0.880; label-unknown 20-seed range 0.836–0.912)."},
+    {"id": "shadow-leakage-significant", "kind": "attack_canary", "posture": "undefended", "metric": "shadow_leakage_p_value", "op": "<=", "value": 0.001,
+     "description": "The shadow attack's one-sided Mann–Whitney p must be ≤ 0.001 (observed ≈ 2e-49)."}
+  ],
+  "rationale": "A shadow attack that accidentally used the victim's membership would be meaningless. Here the meta-classifier never sees a victim membership flag, and still transfers from shadow models to the victim when the attacker knows only the released probability."
+}

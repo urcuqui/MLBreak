@@ -13,6 +13,9 @@ Pairing is per test sample, over the samples eligible in BOTH evaluations:
   ``budget_exhausted``); success = ``evaded`` (target class reached within every constraint).
 * ML03 inversion: eligible = every attacked target; "success" = the private attribute was reconstructed
   correctly (so a reduction is a reduction in correct reconstructions, not in evasions).
+* ML04 membership inference: eligible = every candidate; "success" = the THRESHOLD attack's membership decision
+  (balanced operating point) is correct. ML04 regression cases use the per-attack paired metrics stored in the
+  defended record instead (``*_defense_reduction_p_value``), which cover both attacks.
 * ML02 poisoning: eligible = test samples of the attack's population (target class for targeted
   attacks, all test samples otherwise) that the CLEAN model classifies correctly; success = the
   evaluated model (poisoned / defended) misclassifies them.
@@ -54,6 +57,9 @@ def paired_success(record: Any) -> dict[int, bool]:
                 if s.outcome in ("evaded", "failed", "budget_exhausted")}
     if getattr(record, "family", None) == "inversion":
         return {t.target_index: bool(t.inversion_correct) for t in record.targets if t.trace is not None}
+    if getattr(record, "family", None) == "membership":
+        return {k: c.threshold.member_balanced == (c.truth.group == "member") for k, c in enumerate(record.candidates)
+                if c.threshold is not None}
     if getattr(record, "family", None) == "poisoning":
         cfg = record.poison_config or {}
         target = cfg.get("target_class")

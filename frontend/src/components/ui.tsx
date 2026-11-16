@@ -62,6 +62,8 @@ export function EvalBadge({ evaluation }: { evaluation: string }) {
     poisoning_replay: ["info", "poisoning defense replay"],
     inversion: ["critical", "model inversion"],
     adaptive_inversion: ["warning", "adaptive inversion (output policy)"],
+    membership_inference: ["critical", "membership inference"],
+    adaptive_membership_inference: ["warning", "recalibrated membership inference (defense)"],
   };
   const [tone, label] = map[evaluation] ?? ["neutral", evaluation];
   return <Badge tone={tone}>{label}</Badge>;

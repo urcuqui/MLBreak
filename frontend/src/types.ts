@@ -58,9 +58,11 @@ export interface ExperimentSummary {
   scenario_id: string; owasp_id: string; model_id: string; attack: string | null; epsilon: number | null;
   norm: string | null; defense: string | null; n_samples: number; clean_accuracy: number | null;
   attack_success_rate: number | null; attack_success: string | null; parent_experiment_id: string | null;
-  replay_of: string | null; error: string | null; family?: "evasion" | "poisoning" | "text_evasion" | "inversion";
+  replay_of: string | null; error: string | null; family?: "evasion" | "poisoning" | "text_evasion" | "inversion" | "membership";
   output_policy?: string | null; attribute_inference_accuracy?: number | null; baseline_inference_accuracy?: number | null;
   inference_advantage?: number | null;
+  membership_auc?: number | null; shadow_membership_auc?: number | null; membership_advantage?: number | null;
+  generalization_gap?: number | null;
   max_edit_distance?: number | null; query_budget?: number | null;
   poison_fraction?: number | null; target_class?: number | null;
 }
@@ -333,4 +335,68 @@ export interface InversionTargetsView {
   model_id: string; seed: number; output_policy: OutputPolicy & { releases: string };
   public_features: string[]; hidden_attribute: { name: string; domain: number[]; value: "hidden" };
   targets: { target_index: number; public_features: number[]; observed_output: number }[];
+}
+
+// ---------------------------------------------------------------------------
+// ML04 membership inference (training-set membership)
+// ---------------------------------------------------------------------------
+export type MembershipModelId = "random-forest-overfit" | "logreg-l2" | "random-forest-decoy";
+export type MembershipSignal = "true_label_confidence" | "negative_log_likelihood" | "max_confidence";
+export interface CandidateSelection { n_members: number; n_non_members: number; operational_prevalences: number[] }
+export interface MembershipAttackConfig {
+  label_known: boolean; threshold_signal: MembershipSignal; threshold_mode: "global" | "class_conditional";
+  min_class_calibration: number; target_fpr: number; n_shadow_models: number; n_reference_models: number;
+  query_budget: number;
+}
+export type MembershipDefense =
+  | { kind: "regularization"; min_samples_leaf: number; C: number }
+  | { kind: "complexity_reduction"; max_depth: number; n_estimators: number }
+  | { kind: "output_restriction"; policy: RestrictivePolicy };
+export interface AttackDecision { score: number; class_key: number | null; member_balanced: boolean; member_low_fpr: boolean | null }
+export interface MembershipTruth {
+  group: "member" | "non_member"; in_training: boolean; population: "victim_train" | "evaluation_non_members";
+  population_index: number;
+}
+export interface MembershipCandidate {
+  candidate_id: string; truth: MembershipTruth;
+  observation: { features: number[]; label: number | null; released_output: number; query_index: number } | null;
+  threshold: AttackDecision | null; shadow: AttackDecision | null; undefended_correct: Record<string, boolean> | null;
+}
+export interface OperatingPoint {
+  name: "balanced" | "low_fpr"; thresholds: Record<string, number | null>; calibration_tpr: number; calibration_fpr: number;
+  status: "calibrated" | "approximate" | "undefined"; note: string;
+}
+export interface AttackCalibration {
+  attack: "threshold" | "shadow"; signal: string; mode: string; class_modes: Record<string, string>; target_fpr: number;
+  operating_points: OperatingPoint[]; calibration_auc: number | null;
+}
+export interface MembershipRecord {
+  schema_version: string; family: "membership"; experiment_id: string; created_at: string;
+  mode: "baseline" | "attack" | "defend"; evaluation: "clean" | "membership_inference" | "adaptive_membership_inference";
+  status: "completed" | "failed"; error: string | null; intentionally_vulnerable: boolean; scenario_id: string;
+  owasp: { id: string; name: string; taxonomy: string; taxonomy_version: string; reference_url: string };
+  attacker_capabilities: Record<string, unknown> | null;
+  model: { model_id: string; description: string; artifact_sha256: string; estimator: string; family: string;
+    hyperparameters: Record<string, unknown>; training_population: string; training_population_sha256: string;
+    complexity?: { trees: number; max_depth: number; mean_leaves: number } };
+  target_system: { model_artifact_sha256: string; output_policy: OutputPolicy & { releases: string } };
+  dataset: Record<string, unknown> & { dataset_id: string; split_id: string; features: string[]; label: string;
+    population_sizes: Record<string, number>; disjointness: { disjoint: boolean; duplicate_records: number } };
+  seed: number; output_policy: OutputPolicy; attack_config: MembershipAttackConfig | null;
+  defense_config: MembershipDefense | null; candidate_selection: CandidateSelection;
+  calibration: { population_sha256: string; n_reference_models: number; reference_models: { artifact_sha256: string }[];
+    attacks: Record<"threshold" | "shadow", AttackCalibration> } | null;
+  shadow: { population_sha256: string; n_shadow_models: number; models: { artifact_sha256: string }[];
+    meta_classifier: { estimator: string; features: string[]; n_training_examples: number; artifact_sha256: string } } | null;
+  parent_experiment_id: string | null; replay_of: string | null;
+  lineage: { relation: string; parent_experiment_id: string; checks_passed: string[] } | null;
+  metrics: { [key: string]: unknown };
+  candidates: MembershipCandidate[];
+  utility: { split: "train" | "test"; index: number; y_true: number; p_full: number; released: number }[];
+  reproducibility: Record<string, unknown>; duration_ms: number;
+}
+export interface MembershipCase {
+  id: string; family: "membership"; title: string; owasp_id: string; model_id: string; seed: number;
+  attack: MembershipAttackConfig; candidates: CandidateSelection; defense: MembershipDefense | null;
+  defended_evaluation: "adaptive" | "none"; invariants: Invariant[]; rationale: string;
 }

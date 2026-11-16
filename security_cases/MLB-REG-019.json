@@ -1,0 +1,24 @@
+{
+  "id": "MLB-REG-019",
+  "family": "membership",
+  "title": "A deliberately overfitted victim exhibits measurable membership leakage",
+  "owasp_id": "ML04:2023",
+  "model_id": "random-forest-overfit",
+  "seed": 7,
+  "defended_evaluation": "none",
+  "invariants": [
+    {"id": "victim-overfits", "kind": "attack_canary", "posture": "undefended", "metric": "generalization_gap", "op": ">=", "value": 0.2,
+     "description": "The intentionally overfitting forest must keep a train−test accuracy gap of at least 20 points (observed 1.000 − 0.725 = 0.275; 20-seed range 0.258–0.332)."},
+    {"id": "threshold-auc", "kind": "attack_canary", "posture": "undefended", "metric": "threshold_roc_auc", "op": ">=", "value": 0.8,
+     "description": "The calibrated threshold attack must separate members from non-members with ROC AUC ≥ 0.80 on the 500 untouched candidates (observed 0.896; 20-seed range 0.850–0.928)."},
+    {"id": "shadow-auc", "kind": "attack_canary", "posture": "undefended", "metric": "shadow_roc_auc", "op": ">=", "value": 0.8,
+     "description": "The shadow-model attack must reach ROC AUC ≥ 0.80 (observed 0.895; 20-seed range 0.850–0.931)."},
+    {"id": "advantage", "kind": "attack_canary", "posture": "undefended", "metric": "threshold_membership_advantage", "op": ">=", "value": 0.5,
+     "description": "Membership advantage TPR − FPR at the balanced operating point (calibrated on reference models only) must be ≥ 0.5 over the no-signal baseline (observed 0.616; 20-seed range 0.572–0.704)."},
+    {"id": "leakage-claimed", "kind": "attack_canary", "posture": "undefended", "metric": "leakage_claimed", "op": "==", "value": 1.0,
+     "description": "The pre-declared test (one-sided Mann–Whitney, Bonferroni over both attacks) must claim leakage (observed p ≈ 2e-53; claimed on 20/20 seeds)."},
+    {"id": "low-fpr-operating-point", "kind": "attack_canary", "posture": "undefended", "metric": "threshold_tpr_at_low_fpr", "op": ">=", "value": 0.1,
+     "description": "At the threshold calibrated for FPR ≤ 1% on the attacker's reference models, at least 10% of members must still be identified (observed 45/250 = 18.0%; 20-seed range 4.0–23.2%, so this bound is seed-specific)."}
+  ],
+  "rationale": "Fully grown trees on noisy labels memorise their training records: the released confidence is systematically higher on members. This case proves the lab still exercises a real, measurable membership leak; every defended result is compared against it."
+}

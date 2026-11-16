@@ -33,6 +33,8 @@ from .inversion.sensitivity import SensitivityReport, SensitivityRequest
 from .inversion.sessions import (AttackerQueryResponse, AttackerSessionView, AttackerSubmitReceipt, SessionCreateRequest,
                                  SessionNotFound, SessionNotSubmitted, SessionQueryRequest, SessionRefused, SessionScore,
                                  SessionStore, SessionSubmitRequest, TargetsPreview)
+from .membership.schemas import MembershipAttackRequest, MembershipBaselineRequest, MembershipDefendRequest
+from .membership.study import StudyReport, StudyRequest
 from .poisoning.schemas import PoisonAttackRequest, PoisonBaselineRequest, PoisonDefendRequest
 from .text.schemas import (ModelId as TextModelId, TextAttackRequest, TextBaselineRequest, TextClassifyRequest,
                            TextDefendRequest)
@@ -60,7 +62,8 @@ Every request body is a strict schema (unknown fields are rejected). Error contr
 | 429 | the concurrency gate is full; nothing was executed — retry |
 | 504 | the wall-clock limit was exceeded for non-experiment work (experiments record a failed status instead) |
 
-Experiment endpoints return the full evidence record (evaluator-facing). The ML03 **attacker-facing** surface is the
+Experiment endpoints return the full evidence record (evaluator-facing; ML04 records include the evaluator-only
+membership ground truth, so ML04 has no attacker-facing endpoint). The ML03 **attacker-facing** surface is the
 `ml03-attacker` tag only: a session view, budgeted candidate queries and one submission, with response models that
 contain no ground truth, labels, model parameters, training records or evaluation metrics. With
 `MLBREAK_EVALUATOR_TOKEN` set, every other `/api/` endpoint requires `Authorization: Bearer <token>`. Reports (`/report.md`) are rendered from the stored JSON
@@ -75,6 +78,9 @@ OPENAPI_TAGS = [
                                     "(create/score), sensitivity studies."},
     {"name": "ml03-attacker", "description": "ML03 Model Inversion — ATTACKER-facing: an evaluator-issued session's view, "
                                              "budgeted candidate queries, one submission. Open in evaluator-token mode."},
+    {"name": "ml04", "description": "ML04 Membership Inference — EVALUATOR-facing: experiments (records contain the "
+                                    "evaluator-only membership ground truth), multi-seed studies, attacker-independence "
+                                    "check. There is no attacker-facing ML04 endpoint."},
     {"name": "evidence", "description": "Stored experiments of every lab: list, read, verify, replay, export."},
     {"name": "regression", "description": "Security regression cases and gate."},
     {"name": "ui", "description": "Dashboard data for the web UI."},
@@ -82,6 +88,7 @@ OPENAPI_TAGS = [
 
 _TAG_RULES = (  # first matching prefix wins
     ("/api/experiments/inversion/", "ml03"), ("/api/inversion/", "ml03"),
+    ("/api/experiments/membership/", "ml04"), ("/api/membership/", "ml04"),
     ("/api/experiments/poisoning/", "ml02"), ("/api/experiments/text/", "ml01-spam"), ("/api/text/", "ml01-spam"),
     ("/api/experiments/{experiment_id}/boundary", "ml02"),
     ("/api/experiments/baseline", "ml01-2d"), ("/api/experiments/attack", "ml01-2d"),
@@ -325,6 +332,41 @@ def create_app(root: Path | None = None, cases: Path | None = None,
     def session_score(session_id: str):
         """EVALUATOR-facing: score a SUBMITTED session against ground truth and the auxiliary-only attacker."""
         return sessions.score(session_id)
+
+    # ---------------------------------------------- ML04 membership inference (evaluator-facing only)
+    @app.post("/api/experiments/membership/baseline")
+    def membership_baseline(req: MembershipBaselineRequest):
+        return engine.membership.run_baseline(req).model_dump(mode="json")
+
+    @app.post("/api/experiments/membership/attack")
+    def membership_attack(req: MembershipAttackRequest):
+        return engine.membership.run_attack(req).model_dump(mode="json")
+
+    @app.post("/api/experiments/membership/defend")
+    def membership_defend(req: MembershipDefendRequest):
+        return engine.membership.run_defend(req).model_dump(mode="json")
+
+    @app.get("/api/membership/independence/{experiment_id}")
+    def membership_independence(experiment_id: str):
+        """Re-run a stored attack with the evaluation ground truth permuted (attacker outputs must not change) and
+        check that the attacker's populations are disjoint from the victim's data."""
+        rec = store.load(experiment_id)
+        if getattr(rec, "family", None) != "membership":
+            raise InvalidExperiment(f"{experiment_id} is not an ML04 membership experiment")
+        return engine.membership.attacker_independence(rec)
+
+    @app.post("/api/membership/study", response_model=StudyReport)
+    def membership_study(req: StudyRequest):
+        """Multi-seed study of every configuration (one gated call per seed; up to 20 seeds ≈ 2 minutes)."""
+        return engine.membership.study(req)
+
+    @app.get("/api/membership/study/{report_id}", response_model=StudyReport)
+    def membership_study_get(report_id: str):
+        return engine.membership.load_study(report_id)
+
+    @app.get("/api/membership/study/{report_id}/verify")
+    def membership_study_verify(report_id: str):
+        return engine.membership.verify_study(report_id)
 
     @app.get("/api/experiments/{experiment_id}/boundary")
     def experiment_boundary(experiment_id: str,

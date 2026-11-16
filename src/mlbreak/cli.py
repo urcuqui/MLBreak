@@ -14,12 +14,15 @@ from .text.schemas import (TextAdversarialTrainingDefense, TextAttackConfig, Tex
                            TextClassifyRequest, TextDefendRequest, TextNormalizationDefense, TextSampleSelection)
 from .inversion.schemas import (InversionAttackConfig, InversionAttackRequest, InversionBaselineRequest,
                                 InversionDefendRequest, LabelOnly, QuantizedProbability, TargetSelection)
+from .membership.schemas import (CandidateSelection, ComplexityReduction, MembershipAttackConfig,
+                                 MembershipAttackRequest, MembershipBaselineRequest, MembershipDefendRequest,
+                                 OutputRestriction, Regularization)
 from .poisoning.schemas import (KnnLabelSanitization, LabelFlipConfig, PoisonAttackRequest, PoisonBaselineRequest,
                                 PoisonDefendRequest)
 from .schemas import (AdversarialTrainingDefense, AttackConfig, AttackRequest, BaselineRequest,
                       ConfidenceRejectionDefense, DefendRequest)
 
-BANNER = ("MLBreak — intentionally vulnerable adversarial ML lab (OWASP ML01:2023). "
+BANNER = ("MLBreak — intentionally vulnerable adversarial ML lab (OWASP ML01–ML04:2023). "
           "Educational and defensive research use only.")
 
 
@@ -389,10 +392,117 @@ def _demo_ml03(eng) -> tuple[list, bool]:
     return recs, ok and r["identical"] and rr["identical"]
 
 
+_MEMBERSHIP_KEYS = ("roc_auc", "membership_advantage", "membership_accuracy", "tpr_at_low_fpr", "fpr_at_low_fpr")
+
+
+def _print_membership(rec) -> None:
+    pol = rec.output_policy.get("kind") + (f"/{rec.output_policy['bins']} bins" if "bins" in rec.output_policy else "")
+    d = (rec.defense_config or {}).get("kind")
+    print(f"  {rec.experiment_id}  ML04 mode={rec.mode} evaluation={rec.evaluation} model={rec.model['model_id']} "
+          f"policy={pol}" + (f" defense={d}" if d else "") + f" status={rec.status}")
+    if rec.error:
+        print(f"    error: {rec.error}")
+    m = rec.metrics
+    if not m:
+        return
+    print(f"    {'victim train / test accuracy (gap)':<40} {_pct(m['train_accuracy'])} / {_pct(m['test_accuracy'])} "
+          f"(gap {m['generalization_gap']['value']:+.3f})")
+    for a in ("threshold", "shadow"):
+        if f"{a}_roc_auc" not in m:
+            continue
+        lp, lo, fp = m[f"{a}_leakage_p_value"], m[f"{a}_tpr_at_low_fpr"], m[f"{a}_fpr_at_low_fpr"]
+        low = "undefined" if lo["value"] is None else f"{lo['value']:.3f} at eval FPR {fp['value']:.3f} ({lo['status']})"
+        print(f"    {a + ' attack':<40} AUC {m[f'{a}_roc_auc']['value']:.3f} · advantage "
+              f"{m[f'{a}_membership_advantage']['value']:+.3f} · accuracy {_pct(m[f'{a}_membership_accuracy'])} · "
+              f"TPR@{lo.get('target_fpr')} FPR {low} · p={lp['value']:.2g} "
+              f"{'(leakage claimed)' if lp['leakage_claimed'] else '(not claimed)'}")
+        if f"{a}_defense_reduction_p_value" in m:
+            r = m[f"{a}_defense_reduction_p_value"]
+            print(f"    {'':<40} vs undefended (same candidates): {_pct(m[f'{a}_undefended_membership_accuracy'])} → "
+                  f"{_pct(m[f'{a}_membership_accuracy'])}, paired p={r['value']:.2g}")
+    if "queries" in m:
+        print(f"    {'victim queries':<40} {m['queries']['total']} of {m['queries']['budget']}")
+
+
+def _member_defense(args):
+    if args.defense == "regularization":
+        return Regularization(min_samples_leaf=args.min_samples_leaf, C=args.C)
+    if args.defense == "complexity_reduction":
+        return ComplexityReduction(max_depth=args.max_depth, n_estimators=args.n_estimators)
+    policy = LabelOnly() if args.defense == "label_only" else QuantizedProbability(bins=args.bins)
+    return OutputRestriction(policy=policy)
+
+
+def cmd_member(args) -> int:
+    eng = _engine()
+    lab = eng.membership
+    if args.member_cmd == "study":
+        from .membership.study import StudyRequest, StudyStore, render_markdown
+        if args.replay:
+            r = lab.replay_study(args.replay)
+            print(json.dumps(r, indent=2))
+            return 0 if r["identical"] else 1
+        a, b = (int(x) for x in args.seeds.split("-")) if "-" in args.seeds else (int(args.seeds), int(args.seeds))
+        cfg = MembershipAttackConfig(label_known=not args.label_unknown,
+                                     threshold_signal="max_confidence" if args.label_unknown else "true_label_confidence")
+        rep = lab.study(StudyRequest(seeds=list(range(a, b + 1)), attack=cfg))
+        print(render_markdown(rep))
+        check = lab.verify_study(rep.report_id)
+        print(f"Report {rep.report_id}: {StudyStore(lab.store.root).path(rep.report_id)} · integrity "
+              f"{'ok' if check['ok'] else 'FAILED'}")
+        return 0 if check["ok"] else 1
+    if args.member_cmd == "independence":
+        r = lab.attacker_independence(eng.store.load(args.experiment))
+        print(json.dumps(r, indent=2))
+        return 0 if r["ok"] else 1
+    if args.member_cmd in ("baseline", "attack"):
+        sel = CandidateSelection(n_members=args.members, n_non_members=args.non_members)
+    if args.member_cmd == "baseline":
+        rec = lab.run_baseline(MembershipBaselineRequest(model_id=args.model, seed=args.seed, candidates=sel))
+    elif args.member_cmd == "attack":
+        cfg = MembershipAttackConfig(label_known=not args.label_unknown, threshold_signal=args.signal,
+                                     threshold_mode=args.mode, target_fpr=args.target_fpr, n_shadow_models=args.shadows)
+        rec = lab.run_attack(MembershipAttackRequest(model_id=args.model, seed=args.seed, candidates=sel, attack=cfg))
+    else:
+        rec = lab.run_defend(MembershipDefendRequest(parent_experiment_id=args.parent, defense=_member_defense(args)))
+    _print_membership(rec)
+    return 0 if rec.status == "completed" else 1
+
+
+def _demo_ml04(eng) -> tuple[list, bool]:
+    lab, recs = eng.membership, []
+
+    def show(rec):
+        recs.append(rec)
+        _print_membership(rec)
+        return rec
+
+    print("ML04-1) Baseline — victim utility: training vs held-out accuracy (the generalisation gap); no queries")
+    show(lab.run_baseline(MembershipBaselineRequest()))
+    print("\nML04-2) Membership inference — calibrated threshold + shadow-model attacks on 250 members / 250 non-members")
+    atk = show(lab.run_attack(MembershipAttackRequest()))
+    for i, d in enumerate((Regularization(), ComplexityReduction(), OutputRestriction(policy=QuantizedProbability(bins=4)),
+                           OutputRestriction(policy=LabelOnly())), start=3):
+        label = d.kind + (f" ({d.policy.kind})" if d.kind == "output_restriction" else "")
+        print(f"\nML04-{i}) Defense: {label} — RECALIBRATED attack on the same candidates")
+        show(lab.run_defend(MembershipDefendRequest(parent_experiment_id=atk.experiment_id, defense=d)))
+    print("\nML04-7) Lower-capacity comparison — L2 logistic regression")
+    show(lab.run_attack(MembershipAttackRequest(model_id="logreg-l2")))
+    print("\nML04-8) Negative control — the same overfitting recipe trained on a disjoint decoy population")
+    neg = show(lab.run_attack(MembershipAttackRequest(model_id="random-forest-decoy")))
+    ok = neg.metrics["leakage_claimed"]["value"] == 0.0
+    ind = lab.attacker_independence(atk)
+    print(f"\nML04-9) Attacker independence of {atk.experiment_id} (ground truth permuted, populations disjoint): "
+          f"{'ok' if ind['ok'] else 'FAILED'}")
+    r = eng.replay(atk.experiment_id)
+    print(f"\nML04-10) Exact replay of {atk.experiment_id}: identical={r['identical']}")
+    return recs, ok and ind["ok"] and r["identical"]
+
+
 def cmd_demo(args) -> int:
     eng = _engine()
-    labs = {"ml01": ["ml01"], "ml01-spam": ["ml01-spam"], "ml02": ["ml02"], "ml03": ["ml03"],
-            "all": ["ml01", "ml01-spam", "ml02", "ml03"]}[args.lab]
+    labs = {"ml01": ["ml01"], "ml01-spam": ["ml01-spam"], "ml02": ["ml02"], "ml03": ["ml03"], "ml04": ["ml04"],
+            "all": ["ml01", "ml01-spam", "ml02", "ml03", "ml04"]}[args.lab]
     status = 0
     for k, lab in enumerate(labs):
         if k:
@@ -400,7 +510,7 @@ def cmd_demo(args) -> int:
         if lab == "ml01":
             status |= _demo_ml01(eng)
             continue
-        recs, ok = {"ml01-spam": _demo_text, "ml02": _demo_ml02, "ml03": _demo_ml03}[lab](eng)
+        recs, ok = {"ml01-spam": _demo_text, "ml02": _demo_ml02, "ml03": _demo_ml03, "ml04": _demo_ml04}[lab](eng)
         integrity = [eng.verify(r.experiment_id) for r in recs]
         print(f"\n{lab.upper()} evidence integrity:", ", ".join(
             f"{i['experiment_id']}={'ok' if i['ok'] else 'FAILED'}" for i in integrity))
@@ -591,8 +701,45 @@ def build_parser() -> argparse.ArgumentParser:
     ins.add_argument("--bins", type=int, default=4)
     ins.set_defaults(fn=cmd_invert)
 
+    s = sub.add_parser("member", help="ML04 membership inference: baseline | attack | defend | study | independence")
+    msub = s.add_subparsers(dest="member_cmd", required=True)
+    for name, hlp in (("baseline", "victim utility (train vs held-out) and the no-signal baseline"),
+                      ("attack", "calibrated threshold + shadow-model membership inference")):
+        ms = msub.add_parser(name, help=hlp)
+        ms.add_argument("--model", default="random-forest-overfit",
+                        choices=["random-forest-overfit", "logreg-l2", "random-forest-decoy"])
+        ms.add_argument("--seed", type=int, default=7)
+        ms.add_argument("--members", type=int, default=250)
+        ms.add_argument("--non-members", type=int, default=250)
+        if name == "attack":
+            ms.add_argument("--label-unknown", action="store_true", help="the attacker does not know candidate labels")
+            ms.add_argument("--signal", default="true_label_confidence",
+                            choices=["true_label_confidence", "negative_log_likelihood", "max_confidence"])
+            ms.add_argument("--mode", default="global", choices=["global", "class_conditional"])
+            ms.add_argument("--target-fpr", type=float, default=0.01)
+            ms.add_argument("--shadows", type=int, default=8)
+        ms.set_defaults(fn=cmd_member)
+    ms = msub.add_parser("defend", help="defended victim + RECALIBRATED attack on the parent's candidates")
+    ms.add_argument("parent")
+    ms.add_argument("--defense", default="regularization",
+                    choices=["regularization", "complexity_reduction", "quantized_probability", "label_only"])
+    ms.add_argument("--min-samples-leaf", type=int, default=25)
+    ms.add_argument("--C", type=float, default=0.01)
+    ms.add_argument("--max-depth", type=int, default=4)
+    ms.add_argument("--n-estimators", type=int, default=30)
+    ms.add_argument("--bins", type=int, default=4)
+    ms.set_defaults(fn=cmd_member)
+    ms = msub.add_parser("study", help="multi-seed study of every configuration (evaluator-facing)")
+    ms.add_argument("--seeds", default="0-9", help="seed or inclusive range, e.g. 0-19 (max 20 seeds)")
+    ms.add_argument("--label-unknown", action="store_true")
+    ms.add_argument("--replay", metavar="REPORT_ID", help="re-run a stored study and compare its fingerprints")
+    ms.set_defaults(fn=cmd_member)
+    ms = msub.add_parser("independence", help="check that an attack record is independent of evaluation labels")
+    ms.add_argument("experiment")
+    ms.set_defaults(fn=cmd_member)
+
     s = sub.add_parser("demo", help="run the full Baseline → Attack → Defend → Replay walkthrough")
-    s.add_argument("--lab", default="ml01", choices=["ml01", "ml01-spam", "ml02", "ml03", "all"])
+    s.add_argument("--lab", default="ml01", choices=["ml01", "ml01-spam", "ml02", "ml03", "ml04", "all"])
     s.set_defaults(fn=cmd_demo)
     return p
 

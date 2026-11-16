@@ -1,0 +1,25 @@
+{
+  "id": "MLB-REG-022",
+  "family": "membership",
+  "title": "Leaf-size regularisation reduces measured leakage under a recalibrated attack, with utility reported",
+  "owasp_id": "ML04:2023",
+  "model_id": "random-forest-overfit",
+  "seed": 7,
+  "defense": {"kind": "regularization", "min_samples_leaf": 25},
+  "defended_evaluation": "adaptive",
+  "invariants": [
+    {"id": "threshold-auc-reduced", "kind": "security", "posture": "defended", "metric": "threshold_roc_auc", "op": "<=", "value": 0.65,
+     "description": "Against the regularised forest, the RECALIBRATED threshold attack's AUC must be ≤ 0.65 (observed 0.568, from 0.896 undefended; 20-seed max 0.617)."},
+    {"id": "shadow-auc-reduced", "kind": "security", "posture": "defended", "metric": "shadow_roc_auc", "op": "<=", "value": 0.65,
+     "description": "The shadow attack retrained with the defended recipe must reach AUC ≤ 0.65 (observed 0.539; 20-seed max 0.604)."},
+    {"id": "reduction-significant", "kind": "security", "posture": "defended", "metric": "threshold_defense_reduction_p_value", "op": "<=", "value": 0.001,
+     "description": "Correct membership decisions on the SAME 500 candidates must fall significantly (one-sided paired McNemar; observed p ≈ 2e-43; significant on 20/20 seeds)."},
+    {"id": "gap-reduced", "kind": "security", "posture": "defended", "metric": "generalization_gap", "op": "<=", "value": 0.15,
+     "description": "The defended model's train−test gap must be ≤ 0.15 (observed 0.085; 20-seed range 0.040–0.113)."},
+    {"id": "utility-kept", "kind": "utility", "posture": "defended", "metric": "test_accuracy", "op": ">=", "value": 0.67,
+     "description": "Held-out accuracy must stay ≥ 0.67 (observed 0.703 vs 0.725 undefended; 20-seed utility drop −0.028 to +0.022)."},
+    {"id": "residual-signal", "kind": "attack_canary", "posture": "defended", "metric": "threshold_roc_auc", "op": ">=", "value": 0.52,
+     "description": "Regularisation is not a guarantee: a residual signal remains (observed AUC 0.568, threshold leakage still claimed at p = 0.0045; leakage still claimed on 17/20 seeds)."}
+  ],
+  "rationale": "With at least 25 records per leaf no prediction is determined by one training record, so the confidence gap between members and non-members shrinks. The attacker re-trains its reference and shadow models with the defended recipe (it knows the training procedure); the reduction is measured on the same candidates and comes at little utility cost — but it reduces, it does not remove, leakage."
+}

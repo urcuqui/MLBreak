@@ -40,6 +40,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .config import LIMITS
 from .experiments import EngineBusy, ExperimentEngine
 from .inversion.metrics import INVARIANT_METRICS as INVERSION_METRICS
+from .membership.metrics import INVARIANT_METRICS as MEMBERSHIP_METRICS
+from .membership.schemas import (CandidateSelection, MembershipAttackConfig, MembershipAttackRequest,
+                                 MembershipDefendRequest, MembershipDefense)
 from .inversion.schemas import (InversionAttackConfig, InversionAttackRequest, InversionDefendRequest,
                                 RestrictivePolicy, TargetSelection)
 from .poisoning.metrics import INVARIANT_METRICS as POISONING_METRICS
@@ -205,11 +208,65 @@ class InversionCase(BaseModel):
         return self
 
 
-AnyCase = SecurityCase | PoisoningCase | TextCase | InversionCase
+class MembershipInvariant(BaseModel):
+    """ML04 invariant on a metric of the attack record (``undefended``) or of the recalibrated attack against the
+    defended system (``defended``). Paired comparisons are metrics of the defended record itself
+    (``*_defense_reduction_p_value``, ``*_correctness_reduction``), computed over the same candidates.
+
+    Computed by the runner (1.0 if the check holds, else 0.0):
+
+    * ``evidence_consistency`` — every record of the case passes integrity + lineage verification and the attack
+      record replays bit-identically;
+    * ``attacker_independence`` — re-running each attack with the evaluation ground truth permuted gives bit-identical
+      attacker outputs, and the attacker's calibration / shadow populations share no record with the victim's
+      training set or the candidates;
+    * ``budget_enforcement`` — the same attack with a query budget one below the number of candidates is refused by
+      the counting oracle (failed record, ``QueryBudgetExceeded``) and that failed record verifies.
+    """
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    kind: Literal["security", "utility", "attack_canary"]
+    posture: Literal["undefended", "defended"]
+    metric: Literal[MEMBERSHIP_METRICS + ("budget_enforcement",)]  # type: ignore[valid-type]
+    op: Literal["<=", ">=", "<", ">", "=="]
+    value: float = Field(ge=-1, le=1)
+    description: str
+
+
+class MembershipCase(BaseModel):
+    """ML04 case: ``undefended`` = membership inference against the undefended victim; ``defended`` = the recalibrated
+    attack against ``defense`` with the same candidates and attack configuration."""
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(pattern=r"^MLB-REG-\d{3}$")
+    family: Literal["membership"] = "membership"
+    title: str
+    owasp_id: Literal["ML04:2023"]
+    scenario_id: Literal["ml04-training-membership-inference"] = "ml04-training-membership-inference"
+    model_id: Literal["random-forest-overfit", "logreg-l2", "random-forest-decoy"] = "random-forest-overfit"
+    seed: int = 7
+    attack: MembershipAttackConfig = Field(default_factory=MembershipAttackConfig)
+    candidates: CandidateSelection = Field(default_factory=CandidateSelection)
+    defense: MembershipDefense | None = None
+    defended_evaluation: Literal["adaptive", "none"] = "adaptive"
+    invariants: list[MembershipInvariant] = Field(min_length=1)
+    rationale: str
+
+    @model_validator(mode="after")
+    def _check(self):
+        if (self.defense is None) != (self.defended_evaluation == "none"):
+            raise ValueError("defended_evaluation must be 'none' exactly when no defense is declared")
+        if self.defense is None and any(i.posture != "undefended" for i in self.invariants):
+            raise ValueError("defended invariants need a defense")
+        return self
+
+
+AnyCase = SecurityCase | PoisoningCase | TextCase | InversionCase | MembershipCase
 
 
 def parse_case(text: str) -> AnyCase:
     data = json.loads(text)
+    if data.get("family") == "membership" or data.get("owasp_id") == "ML04:2023":
+        return MembershipCase.model_validate(data)
     if data.get("family") == "inversion" or data.get("owasp_id") == "ML03:2023":
         return InversionCase.model_validate(data)
     if data.get("family") == "text_evasion":
@@ -308,7 +365,53 @@ def run_inversion_case(engine: ExperimentEngine, case: InversionCase) -> dict[st
     return result
 
 
+_COMPUTED = ("evidence_consistency", "attacker_independence", "budget_enforcement")
+
+
+def run_membership_case(engine: ExperimentEngine, case: MembershipCase) -> dict[str, Any]:
+    from .attacks import QueryBudgetExceeded  # noqa: F401  (documented failure mode of the budget probe)
+    lab = engine.membership
+    req = MembershipAttackRequest(scenario_id=case.scenario_id, model_id=case.model_id, seed=case.seed,
+                                  attack=case.attack, candidates=case.candidates)
+    undefended = lab.run_attack(req)
+    defended = None
+    if _completed(undefended) and case.defense is not None:
+        defended = lab.run_defend(MembershipDefendRequest(parent_experiment_id=undefended.experiment_id,
+                                                          defense=case.defense))
+    result = _evaluate(case, undefended, defended)
+    wanted = {i.metric for i in case.invariants} & set(_COMPUTED)
+    computed: dict[str, tuple[float, dict[str, Any]]] = {}
+    ran = _completed(undefended) and (case.defense is None or _completed(defended))
+    recs = [r for r in (undefended, defended) if r is not None]
+    if "evidence_consistency" in wanted:
+        d: dict[str, Any] = {}
+        ok = ran
+        if ran:
+            d["verified"] = {r.experiment_id: engine.verify_full(r)["ok"] for r in recs}
+            d["replay_identical"] = engine.replay(undefended.experiment_id)["identical"]
+            ok = all(d["verified"].values()) and d["replay_identical"]
+        computed["evidence_consistency"] = (1.0 if ok else 0.0, d)
+    if "attacker_independence" in wanted:
+        d = {r.experiment_id: lab.attacker_independence(r) for r in recs} if ran else {}
+        computed["attacker_independence"] = (1.0 if ran and all(v["ok"] for v in d.values()) else 0.0, d)
+    if "budget_enforcement" in wanted:
+        n = case.candidates.n_members + case.candidates.n_non_members
+        probe = lab.run_attack(req.model_copy(update={"attack": case.attack.model_copy(update={"query_budget": n - 1})}))
+        d = {"probe_experiment_id": probe.experiment_id, "status": probe.status, "error": probe.error,
+             "verified": engine.verify_full(probe)["ok"]}
+        ok = probe.status == "failed" and (probe.error or "").startswith("QueryBudgetExceeded") and d["verified"]
+        computed["budget_enforcement"] = (1.0 if ok else 0.0, d)
+    for inv, res in zip(case.invariants, result["invariants"]):
+        if inv.metric in computed:
+            res["observed"], res["details"] = computed[inv.metric]
+            res["passed"] = _OPS[inv.op](res["observed"], inv.value)
+    result["passed"] = all(r["passed"] for r in result["invariants"])
+    return result
+
+
 def run_case(engine: ExperimentEngine, case: AnyCase) -> dict[str, Any]:
+    if isinstance(case, MembershipCase):
+        return run_membership_case(engine, case)
     if isinstance(case, InversionCase):
         return run_inversion_case(engine, case)
     if isinstance(case, TextCase):
