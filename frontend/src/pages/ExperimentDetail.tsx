@@ -1,9 +1,10 @@
 import { Fragment, useEffect, useState } from "react";
+import { IntegrityPanel } from "../components/lab";
 import { useParams } from "react-router-dom";
 import { api, evidenceLinks } from "../api";
 import { BoundaryPlot } from "../components/BoundaryPlot";
 import { Badge, ErrorBox, EvalBadge, ExpLink, Panel, RatioView, StatusBadge, Tile } from "../components/ui";
-import type { BoundaryResponse, DatasetResponse, ExperimentRecord, PoisoningRecord, ReplayResult, TextRecord } from "../types";
+import type { BoundaryResponse, DatasetResponse, ExperimentRecord, PoisoningRecord, TextRecord } from "../types";
 import { PoisoningDetail } from "./PoisoningDetail";
 import { TextDetail } from "./TextDetail";
 
@@ -14,12 +15,10 @@ export function ExperimentDetail() {
   const [text, setText] = useState<TextRecord | null>(null);
   const [dataset, setDataset] = useState<DatasetResponse | null>(null);
   const [boundary, setBoundary] = useState<BoundaryResponse | null>(null);
-  const [replay, setReplay] = useState<ReplayResult | null>(null);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setRec(null); setPoisoning(null); setText(null); setReplay(null); setError(null);
+    setRec(null); setPoisoning(null); setText(null); setError(null);
     api.anyExperiment(id).then((any) => {
       if ((any as PoisoningRecord).family === "poisoning") { setPoisoning(any as PoisoningRecord); return; }
       if ((any as TextRecord).family === "text_evasion") { setText(any as TextRecord); return; }
@@ -31,10 +30,6 @@ export function ExperimentDetail() {
     }).catch((e) => setError(String(e.message ?? e)));
   }, [id]);
 
-  const doReplay = async () => {
-    setBusy(true); setError(null);
-    try { setReplay(await api.replay(id)); } catch (e) { setError(String((e as Error).message ?? e)); } finally { setBusy(false); }
-  };
 
   if (text) return <TextDetail key={text.experiment_id} rec={text} />;
   if (poisoning) return <PoisoningDetail key={poisoning.experiment_id} rec={poisoning} />;
@@ -57,16 +52,13 @@ export function ExperimentDetail() {
           <a className="btn" href={links.json} download>JSON</a>
           <a className="btn" href={links.md} download>Markdown</a>
           <a className="btn" href={links.csv} download>CSV</a>
-          <button className="btn primary" disabled={busy || rec.status !== "completed"} onClick={doReplay}>{busy ? "Replaying…" : "Replay experiment"}</button>
         </div>
       </div>
       <ErrorBox error={error ?? (rec.error ? `Experiment failed: ${rec.error}` : null)} />
-      {replay && (
-        <div className={replay.identical ? "callout good" : "callout bad"}>
-          {replay.identical ? "✓ Replay produced identical results" : "✕ Replay diverged"} — new experiment <ExpLink id={replay.replay_experiment_id} />.
-          <ul className="small">{replay.checks.map((c) => <li key={c.check}>{c.match ? "✓" : "✕"} {c.check}</li>)}</ul>
-        </div>
-      )}
+      <section className="panel" aria-label="Integrity and replay">
+        <header className="panel-head"><h2>Integrity &amp; replay</h2></header>
+        <div className="panel-body"><IntegrityPanel id={rec.experiment_id} completed={rec.status === "completed"} /></div>
+      </section>
       <div className="tiles">
         <Tile label="Clean accuracy"><RatioView r={m.clean_accuracy} emphasize /></Tile>
         {m.coverage && <Tile label="Coverage"><RatioView r={m.coverage} /></Tile>}
@@ -114,7 +106,7 @@ export function ExperimentDetail() {
         </div>
       </div>
       <Panel title={`Per-sample results (${rec.samples.length})`}>
-        <div className="table-wrap scroll-y"><table className="table small">
+        <div className="table-wrap scroll-y" tabIndex={0} role="region" aria-label="Per-sample results"><table className="table small">
           <thead><tr><th>test #</th><th>y</th><th>x original</th><th>pred</th><th>conf</th><th>x adversarial</th><th>pred adv</th><th>conf adv</th><th>‖δ‖∞</th><th>‖δ‖₂</th><th>queries</th><th>outcome</th></tr></thead>
           <tbody>{rec.samples.map((s) => (
             <tr key={s.test_index}>

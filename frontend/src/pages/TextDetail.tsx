@@ -1,20 +1,12 @@
-import { useState } from "react";
-import { api, evidenceLinks } from "../api";
+import { IntegrityPanel } from "../components/lab";
+import { evidenceLinks } from "../api";
 import { Badge, ErrorBox, EvalBadge, ExpLink } from "../components/ui";
-import type { ReplayResult, TextRecord } from "../types";
+import type { TextRecord } from "../types";
 import { TextDetailBody } from "./SpamWorkspace";
 
 /** Detail view of a stored ML01 spam-filter evasion experiment. */
 export function TextDetail({ rec }: { rec: TextRecord }) {
-  const [replay, setReplay] = useState<ReplayResult | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const links = evidenceLinks(rec.experiment_id);
-  const doReplay = async () => {
-    setBusy(true); setError(null);
-    try { setReplay(await api.replay(rec.experiment_id)); } catch (e) { setError(String((e as Error).message ?? e)); }
-    finally { setBusy(false); }
-  };
   return (
     <div className="page">
       <div className="page-head">
@@ -33,16 +25,13 @@ export function TextDetail({ rec }: { rec: TextRecord }) {
           <a className="btn" href={links.json} download>JSON</a>
           <a className="btn" href={links.md} download>Markdown</a>
           <a className="btn" href={links.csv} download>CSV</a>
-          <button className="btn primary" disabled={busy || rec.status !== "completed"} onClick={doReplay}>{busy ? "Replaying…" : "Replay experiment"}</button>
         </div>
       </div>
-      <ErrorBox error={error ?? (rec.error ? `Experiment failed: ${rec.error}` : null)} />
-      {replay && (
-        <div className={replay.identical ? "callout good" : "callout bad"}>
-          {replay.identical ? "✓ Replay produced identical results" : "✕ Replay diverged"} — new experiment <ExpLink id={replay.replay_experiment_id} />.
-          <ul className="small">{replay.checks.map((c) => <li key={c.check}>{c.match ? "✓" : "✕"} {c.check}</li>)}</ul>
-        </div>
-      )}
+      <ErrorBox error={rec.error ? `Experiment failed: ${rec.error}` : null} />
+      <section className="panel" aria-label="Integrity and replay">
+        <header className="panel-head"><h2>Integrity &amp; replay</h2></header>
+        <div className="panel-body"><IntegrityPanel id={rec.experiment_id} completed={rec.status === "completed"} /></div>
+      </section>
       <TextDetailBody rec={rec} />
     </div>
   );

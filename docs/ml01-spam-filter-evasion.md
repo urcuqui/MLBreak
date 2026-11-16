@@ -105,6 +105,12 @@ number-for-number with the paper or the notebook.
 | `protect_stopwords` | on | an explicit list of English function words (scikit-learn's `ENGLISH_STOP_WORDS` is **not** used: it contains "call", "now", "get", "bill", the words of a spam call-to-action) |
 | valid Unicode | always | no control, surrogate, private-use or unassigned characters; format characters only through the `invisible` charset |
 
+> **Constraint-valid is not meaning-preserving.** A constraint-valid evasion is **not proof** that the
+> message's meaning is preserved: edit distance, character/word ratios and protected tokens are *proxies*.
+> MLBreak performs no human or semantic-similarity check, and every report, CLI summary and UI view carries this
+> statement next to the adversarial messages. "Evaded" means: the classifier's decision changed while every
+> *declared* constraint held, and nothing more.
+
 **A label change alone is not an evasion.** An outcome is `evaded` only if the target class is reached **and**
 every constraint holds. If the search ever returned a success that violates a constraint, the experiment is
 recorded as **failed** (`TextConstraintViolation`), never as an evasion. `mlbreak check` re-validates every

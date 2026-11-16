@@ -346,6 +346,16 @@ class ExperimentEngine:
         return _check("lineage", not problems, "; ".join(problems) or
                       f"parent {parent.experiment_id} verifies and matches the recorded parent hashes")
 
+    def report(self, experiment_id: str) -> str:
+        """Markdown report rendered NOW from the stored JSON, with a fresh integrity + lineage check (section 7).
+
+        The ``.md`` file written next to the JSON is a snapshot from creation time; serving it would hide later
+        tampering of the JSON. This is what the API and ``mlbreak export --format md`` return.
+        """
+        from .evidence import render_any
+        rec = self.store.load(experiment_id)
+        return render_any(rec, self.verify_full(rec))
+
     def gated(self, fn: Callable[[float], Any]) -> Any:
         """Run ``fn(deadline)`` inside the shared concurrency gate and wall-clock deadline (any lab family)."""
         return self._guarded(fn)

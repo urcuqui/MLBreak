@@ -59,7 +59,8 @@ class EvidenceStore:
             tmp = self.json_path(record.experiment_id).with_suffix(".json.tmp")
             tmp.write_text(json.dumps(data, indent=2))
             tmp.replace(self.json_path(record.experiment_id))
-            self.md_path(record.experiment_id).write_text(render_any(record))
+            from .experiments import verify_any_record  # record-level check at write time (no lineage)
+            self.md_path(record.experiment_id).write_text(render_any(record, verify_any_record(record)))
 
     def load(self, experiment_id: str) -> AnyRecord:
         path = self.json_path(experiment_id)
@@ -130,14 +131,19 @@ def text_csv(rec: TextEvasionRecord) -> str:
     return buf.getvalue()
 
 
-def render_any(rec: AnyRecord) -> str:
+def render_any(rec: AnyRecord, verification: dict | None = None) -> str:
+    """Render the report of any record family with the shared seven-section structure.
+
+    ``verification`` is the integrity report to embed (section 7). Callers that can check lineage (the engine)
+    pass ``ExperimentEngine.verify_full``; ``save`` embeds the record-level check made when the file is written.
+    """
     if isinstance(rec, TextEvasionRecord):
         from .text.report import render_text_markdown
-        return render_text_markdown(rec)
+        return render_text_markdown(rec, verification)
     if isinstance(rec, PoisoningRecord):
         from .poisoning.report import render_poisoning_markdown
-        return render_poisoning_markdown(rec)
-    return render_markdown(rec)
+        return render_poisoning_markdown(rec, verification)
+    return render_markdown(rec, verification)
 
 
 def summarize(rec: dict[str, Any]) -> dict[str, Any]:
@@ -230,103 +236,65 @@ def _ratio(r: dict | None) -> str:
     return f"{pct} ({r['numerator']}/{r['denominator']})"
 
 
-def render_markdown(rec: ExperimentRecord) -> str:
+def render_markdown(rec: ExperimentRecord, verification: dict | None = None) -> str:
+    """ML01 2-D evasion report (shared seven-section structure, see mlbreak.reporting)."""
+    from .reporting import compose, json_block
     m = rec.metrics
-    lines = [
-        f"# MLBreak experiment {rec.experiment_id}",
-        "",
-        f"> **Intentionally vulnerable scenario:** {'yes' if rec.intentionally_vulnerable else 'no (defended system)'}. "
-        "Educational use only.",
-        "",
-        "| Field | Value |",
-        "|---|---|",
-        f"| OWASP category | {rec.owasp['id']} — {rec.owasp['name']} ({rec.owasp['taxonomy']} {rec.owasp['taxonomy_version']}) |",
-        f"| Scenario | `{rec.scenario_id}` |",
-        f"| Mode / evaluation | {rec.mode} / {rec.evaluation} |",
-        f"| Status | **{rec.status}** |",
-        f"| Created | {rec.created_at} |",
-        f"| Seed | {rec.seed} |",
-        f"| Model | `{rec.model['model_id']}` ({rec.model['estimator']}) |",
-        f"| Model artifact SHA-256 | `{rec.model['artifact_sha256']}` |",
-        f"| Target system artifact SHA-256 | `{rec.target_system['model_artifact_sha256']}` |",
-        f"| Dataset / split | `{rec.dataset['dataset_id']}` / `{rec.dataset['split_id']}` |",
-        f"| Test split SHA-256 | `{rec.dataset['test_sha256']}` |",
-    ]
-    if rec.parent_experiment_id:
-        lines.append(f"| Parent experiment | `{rec.parent_experiment_id}` |")
-    if rec.replay_of:
-        lines.append(f"| Replay of | `{rec.replay_of}` |")
-    lines.append(f"| Evidence schema | `{rec.schema_version}` |")
-    if rec.error:
-        lines += ["", f"**Error:** {rec.error}"]
-
-    if rec.attacker_capabilities:
-        lines += ["", "## Attacker capabilities", ""]
-        lines += [f"- **{k}**: {v}" for k, v in rec.attacker_capabilities.items()]
+    summary = [("Model", f"`{rec.model['model_id']}` ({rec.model['estimator']})")]
+    config = ["| Item | Value |", "|---|---|",
+              f"| Model artifact SHA-256 | `{rec.model['artifact_sha256']}` |",
+              f"| Target system artifact SHA-256 | `{rec.target_system.get('model_artifact_sha256')}` |",
+              f"| Decision policy | {rec.target_system.get('decision_policy', 'n/a')} |",
+              f"| Dataset / split | `{rec.dataset['dataset_id']}` / `{rec.dataset['split_id']}` |",
+              f"| Train / test split SHA-256 | `{rec.dataset.get('train_sha256')}` / `{rec.dataset['test_sha256']}` |"]
     if rec.attack_config:
-        lines += ["", "## Attack configuration", "", "```json", json.dumps(rec.attack_config, indent=2), "```"]
-    lines += ["", "## Defense configuration", ""]
-    lines += (["```json", json.dumps(rec.defense_config, indent=2), "```"] if rec.defense_config
-              else ["None — the undefended (intentionally vulnerable) model was evaluated."])
+        config += ["", "### Attack", "", *json_block(rec.attack_config)]
+    config += ["", "### Defense", ""]
+    config += json_block(rec.defense_config) if rec.defense_config else \
+        ["None — the undefended (intentionally vulnerable) model was evaluated."]
 
+    out: list[str] = []
     if m:
-        lines += ["", "## Metrics", "", "| Metric | Value |", "|---|---|"]
+        out += ["| Metric | Value |", "|---|---|"]
         for key in ("clean_accuracy", "abstention_rate_clean", "coverage", "selective_accuracy",
                     "clean_accuracy_selected", "adversarial_accuracy", "robust_accuracy", "attack_success_rate",
                     "abstention_rate_adversarial", "attack_resisted_rate", "adversarial_coverage",
                     "adversarial_selective_accuracy"):
             if key in m:
-                lines.append(f"| {key} | {_ratio(m[key])} |")
+                out.append(f"| {key} | {_ratio(m[key])} |")
         if "outcomes" in m:
             o = m["outcomes"]
-            lines += ["", "### Outcome partition (selected samples)", "",
-                      "| Outcome | Count |", "|---|---|"]
-            lines += [f"| {k} | {v} |" for k, v in o["counts"].items()]
-            lines += [f"| **total (n_selected)** | **{o['n_selected']}** |", "",
-                      f"Attack-eligible samples: {o['attack_eligible']} (evaded + abstained_adversarial + robust). "
-                      "Abstentions are never counted as correct predictions nor as attack successes."]
-        lines += ["", "### Metric definitions", ""]
+            out += ["", "### Outcome partition (selected samples)", "", "| Outcome | Count |", "|---|---|"]
+            out += [f"| {k} | {v} |" for k, v in o["counts"].items()]
+            out += [f"| **total (n_selected)** | **{o['n_selected']}** |", "",
+                    f"Attack-eligible samples: {o['attack_eligible']} (evaded + abstained_adversarial + robust). "
+                    "Abstentions are never counted as correct predictions nor as attack successes."]
+        if "perturbation" in m:
+            p = m["perturbation"]
+            out += ["", "### Perturbation magnitude", "",
+                    f"Budget: ‖δ‖_{p['norm'].replace('linf', '∞').replace('l2', '2')} ≤ ε = {p['epsilon']}. "
+                    f"Largest observed ‖δ‖/ε = {p['max_budget_ratio']:.4f} (verified ≤ 1).", "",
+                    "| Subset | n | mean L∞ | max L∞ | mean L2 | max L2 |", "|---|---|---|---|---|---|"]
+            for subset in ("attacked", "successful"):
+                st = p[subset]
+                out.append(f"| {subset} | {st['n']} | {st['linf_mean']:.4f} | {st['linf_max']:.4f} | "
+                           f"{st['l2_mean']:.4f} | {st['l2_max']:.4f} |" if st["n"] else f"| {subset} | 0 | – | – | – | – |")
+        if "comparison" in m:
+            out += ["", "### Undefended vs defended", "", "| | Undefended | Defended |", "|---|---|---|"]
+            out += [f"| {k} | {_ratio(v['undefended'])} | {_ratio(v['defended'])} |" for k, v in m["comparison"].items()]
+        if "notes" in m:
+            out += ["", "### Notes", ""] + [f"- {n}" for n in m["notes"]]
+        out += ["", "### Metric definitions", ""]
         for key, v in m.items():
             if isinstance(v, dict) and "definition" in v and "numerator" in v:
                 pop = f" *Population:* {v['population']}." if v.get("population") else ""
-                lines.append(f"- **{key}**: {v['definition']}.{pop}")
-        if "perturbation" in m:
-            p = m["perturbation"]
-            lines += ["", "### Perturbation magnitude", "",
-                      f"Budget: ‖δ‖_{p['norm'].replace('linf', '∞').replace('l2', '2')} ≤ ε = {p['epsilon']}. "
-                      f"Largest observed ‖δ‖/ε = {p['max_budget_ratio']:.4f} (verified ≤ 1).", "",
-                      "| Subset | n | mean L∞ | max L∞ | mean L2 | max L2 |", "|---|---|---|---|---|---|"]
-            for subset in ("attacked", "successful"):
-                s = p[subset]
-                if s["n"]:
-                    lines.append(f"| {subset} | {s['n']} | {s['linf_mean']:.4f} | {s['linf_max']:.4f} | "
-                                 f"{s['l2_mean']:.4f} | {s['l2_max']:.4f} |")
-                else:
-                    lines.append(f"| {subset} | 0 | – | – | – | – |")
-        if "comparison" in m:
-            lines += ["", "### Undefended vs defended", "", "| | Undefended | Defended |", "|---|---|---|"]
-            for k, v in m["comparison"].items():
-                lines.append(f"| {k} | {_ratio(v['undefended'])} | {_ratio(v['defended'])} |")
-        if "notes" in m:
-            lines += ["", "### Notes", ""] + [f"- {n}" for n in m["notes"]]
-
+                out.append(f"- **{key}**: {v['definition']}.{pop}")
     if rec.samples and rec.mode != "baseline":
-        lines += ["", "## Per-sample results (first 25)", "",
-                  "| test idx | y | pred (clean) | pred (adv) | ‖δ‖∞ | success |", "|---|---|---|---|---|---|"]
+        out += ["", "### Per-sample results (first 25)", "",
+                "| test idx | y | pred (clean) | pred (adv) | ‖δ‖∞ | success |", "|---|---|---|---|---|---|"]
         for s in rec.samples[:25]:
             pa = "–" if s.pred_adversarial is None else s.pred_adversarial
             d = "–" if s.perturbation_linf is None else f"{s.perturbation_linf:.4f}"
-            lines.append(f"| {s.test_index} | {s.y_true} | {s.pred_original} | {pa} | {d} | {s.attack_success} |")
-        lines += ["", "Prediction `-1` means the system abstained (confidence rejection)."]
-
-    if rec.lineage:
-        lin = rec.lineage
-        lines += ["", "## Lineage", "",
-                  f"Relation: `{lin['relation']}` → parent `{lin['parent_experiment_id']}` "
-                  f"({lin['parent_evaluation']}, {lin['parent_schema_version']})", "",
-                  "Validated before execution: " + "; ".join(lin.get("checks_passed", [])) + ".", "",
-                  "```json", json.dumps(lin, indent=2), "```"]
-    r = rec.reproducibility
-    lines += ["", "## Reproducibility", "", "```json", json.dumps(r, indent=2), "```", "",
-              f"Replay with: `mlbreak replay {rec.experiment_id}`", ""]
-    return "\n".join(lines)
+            out.append(f"| {s.test_index} | {s.y_true} | {s.pred_original} | {pa} | {d} | {s.attack_success} |")
+        out += ["", "Prediction `-1` means the system abstained (confidence rejection)."]
+    return compose(rec, summary_rows=summary, configuration=config, outcomes=out, verification=verification)

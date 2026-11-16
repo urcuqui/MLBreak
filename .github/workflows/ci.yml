@@ -15,8 +15,8 @@ jobs:
       # to make CI independent of the runner's CPU. See docs/regression-analysis-mlb-reg-002.md.
       OPENBLAS_CORETYPE: Haswell
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with: { python-version: "${{ matrix.python }}" }
       - name: Install locked dependencies (hash-checked) and the project
         run: |
@@ -35,8 +35,29 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: "20" }
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: "22" }
       - run: npm ci && npm run build
         working-directory: frontend
+  docker:
+    # Builds the shipped image (hash-pinned runtime deps, bundled corpus, built UI) and smoke-tests it running
+    # with the same hardening as compose.yaml.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build image
+        run: docker build -t mlbreak:ci .
+      - name: Start hardened container
+        run: >
+          docker run -d --name mlbreak -p 127.0.0.1:8000:8000 --read-only --tmpfs /tmp --tmpfs /data:uid=10001
+          --cap-drop ALL --security-opt no-new-privileges:true mlbreak:ci
+      - name: Smoke test (health, UI, bundled spam model)
+        run: |
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/api/health && break; sleep 1; done
+          curl -sf -o /dev/null http://127.0.0.1:8000/lab/ml01/spam/baseline
+          curl -sf -X POST -H 'Content-Type: application/json' -d '{"text": "WINNER! Claim your prize, call 09061701461"}' \
+            http://127.0.0.1:8000/api/text/classify | grep -q '"label"'
+      - name: Container logs
+        if: ${{ always() }}
+        run: docker logs mlbreak || true

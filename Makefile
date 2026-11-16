@@ -32,8 +32,8 @@ test:
 verify: ## security regression gate (non-zero exit on failure)
 	$(RUN) -m mlbreak verify
 
-demo:
-	$(RUN) -m mlbreak demo
+demo: ## all three labs end to end (ML01 2-D, ML01 spam, ML02)
+	$(RUN) -m mlbreak demo --lab all
 
 docker:
 	docker compose up --build

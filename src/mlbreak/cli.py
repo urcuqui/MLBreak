@@ -124,9 +124,9 @@ def cmd_list(args) -> int:
 
 
 def cmd_export(args) -> int:
-    store = EvidenceStore(data_dir())
-    print(store.markdown(args.experiment_id) if args.format == "md"
-          else store.json_path(args.experiment_id).read_text())
+    # Markdown is rendered from the JSON with a fresh integrity + lineage check (section 7 of the report).
+    print(_engine().report(args.experiment_id) if args.format == "md"
+          else EvidenceStore(data_dir()).json_path(args.experiment_id).read_text())
     return 0
 
 

@@ -36,6 +36,48 @@ _CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'
         "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
 
 
+API_DESCRIPTION = """Adversarial ML security lab (OWASP Machine Learning Security Top 10, 2023). **Intentionally
+vulnerable — run locally.**
+
+Every request body is a strict schema (unknown fields are rejected). Error contract:
+
+| Status | Meaning |
+|---|---|
+| 404 | unknown experiment id (ids must match `MLB-EXP-<12 hex>`) |
+| 409 | the stored evidence failed its integrity check; nothing was executed (body: `integrity` report) |
+| 422 | invalid request, or a valid request that cannot run (e.g. an incompatible parent experiment) |
+| 429 | the concurrency gate is full; nothing was executed — retry |
+| 504 | the wall-clock limit was exceeded for non-experiment work (experiments record a failed status instead) |
+
+Experiment endpoints return the full evidence record. Reports (`/report.md`) are rendered from the stored JSON
+with a fresh integrity check. See `docs/api.md` for examples."""
+
+OPENAPI_TAGS = [
+    {"name": "catalogue", "description": "OWASP registry, scenarios, limits, health."},
+    {"name": "ml01-2d", "description": "ML01 Input Manipulation — 2-D classifier evasion (baseline, attack, defend)."},
+    {"name": "ml01-spam", "description": "ML01 Input Manipulation — spam-filter evasion with character-level text."},
+    {"name": "ml02", "description": "ML02 Data Poisoning — label flipping and kNN label sanitisation."},
+    {"name": "evidence", "description": "Stored experiments of every lab: list, read, verify, replay, export."},
+    {"name": "regression", "description": "Security regression cases and gate."},
+    {"name": "ui", "description": "Dashboard data for the web UI."},
+]
+
+_TAG_RULES = (  # first matching prefix wins
+    ("/api/experiments/poisoning/", "ml02"), ("/api/experiments/text/", "ml01-spam"), ("/api/text/", "ml01-spam"),
+    ("/api/experiments/{experiment_id}/boundary", "ml02"),
+    ("/api/experiments/baseline", "ml01-2d"), ("/api/experiments/attack", "ml01-2d"),
+    ("/api/experiments/defend", "ml01-2d"), ("/api/boundary", "ml01-2d"), ("/api/scenarios/{scenario_id}/dataset", "ml01-2d"),
+    ("/api/experiments", "evidence"), ("/api/regression", "regression"), ("/api/dashboard", "ui"), ("/api/", "catalogue"),
+)
+
+
+def _tag_routes(app: FastAPI) -> None:
+    from fastapi.routing import APIRoute
+    for route in app.routes:
+        if isinstance(route, APIRoute) and route.path.startswith("/api/") and not route.tags:
+            route.tags = [next(tag for prefix, tag in _TAG_RULES if route.path.startswith(prefix))]
+
+
 def _summary(report: dict | None) -> dict | None:
     if report is None:
         return None
@@ -47,8 +89,7 @@ def create_app(root: Path | None = None, cases: Path | None = None,
     store = EvidenceStore(root or data_dir())
     engine = ExperimentEngine(store)
     cases_path = cases or cases_dir()
-    app = FastAPI(title="MLBreak", version=__version__,
-                  description="Adversarial ML security lab (OWASP ML Top 10, 2023). Intentionally vulnerable.")
+    app = FastAPI(title="MLBreak", version=__version__, description=API_DESCRIPTION, openapi_tags=OPENAPI_TAGS)
     app.state.store, app.state.engine = store, engine
 
     @app.middleware("http")
@@ -198,7 +239,8 @@ def create_app(root: Path | None = None, cases: Path | None = None,
 
     @app.get("/api/experiments/{experiment_id}/report.md")
     def evidence_md(experiment_id: str):
-        return PlainTextResponse(store.markdown(experiment_id), media_type="text/markdown",
+        # Rendered from the JSON record with a fresh integrity check (not the write-time snapshot).
+        return PlainTextResponse(engine.report(experiment_id), media_type="text/markdown",
                                  headers={"Content-Disposition": f'attachment; filename="{experiment_id}.md"'})
 
     @app.get("/api/experiments/{experiment_id}/samples.csv")
@@ -240,6 +282,8 @@ def create_app(root: Path | None = None, cases: Path | None = None,
             "regression_cases": len(load_cases(cases_path)),
             "regression_latest": _summary(_latest_report()),
         }
+
+    _tag_routes(app)
 
     # -------------------------------------------------------------- frontend
     if frontend_dist is not None and (frontend_dist / "index.html").is_file():

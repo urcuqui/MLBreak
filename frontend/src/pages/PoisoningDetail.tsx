@@ -1,24 +1,17 @@
-import { Fragment, useState } from "react";
-import { api, evidenceLinks } from "../api";
+import { Fragment } from "react";
+import { IntegrityPanel } from "../components/lab";
+import { evidenceLinks } from "../api";
 import { PoisonPlot } from "../components/PoisonPlot";
 import { Badge, ErrorBox, EvalBadge, ExpLink, Panel, StatusBadge } from "../components/ui";
-import type { PoisoningRecord, ReplayResult } from "../types";
+import type { PoisoningRecord } from "../types";
 import { AttackPlots, DefendPlots, DefenseResults, MetricsCompare, useExperimentBoundary } from "./PoisoningWorkspace";
 
 /** Detail view of a stored ML02 poisoning experiment. Every chart is rebuilt from this record. */
 export function PoisoningDetail({ rec }: { rec: PoisoningRecord }) {
-  const [replay, setReplay] = useState<ReplayResult | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const links = evidenceLinks(rec.experiment_id);
   const domain = rec.dataset.domain as number[][] | undefined;
   const ok = rec.status === "completed";
   const clean = useExperimentBoundary(rec.experiment_id, "clean", ok && rec.mode === "baseline");
-  const doReplay = async () => {
-    setBusy(true); setError(null);
-    try { setReplay(await api.replay(rec.experiment_id)); }
-    catch (e) { setError(String((e as Error).message ?? e)); } finally { setBusy(false); }
-  };
   return (
     <div className="page">
       <div className="page-head">
@@ -37,17 +30,13 @@ export function PoisoningDetail({ rec }: { rec: PoisoningRecord }) {
           <a className="btn" href={links.json} download>JSON</a>
           <a className="btn" href={links.md} download>Markdown</a>
           <a className="btn" href={links.csv} download>CSV</a>
-          <button className="btn primary" disabled={busy || !ok} onClick={doReplay}>{busy ? "Replaying…" : "Replay experiment"}</button>
         </div>
       </div>
-      <ErrorBox error={error ?? (rec.error ? `Experiment failed: ${rec.error}` : null)} />
-      {replay && (
-        <div className={replay.identical ? "callout good" : "callout bad"}>
-          {replay.identical ? "✓ Replay produced identical results" : "✕ Replay diverged"} — new experiment{" "}
-          <ExpLink id={replay.replay_experiment_id} />.
-          <ul className="small">{replay.checks.map((c) => <li key={c.check}>{c.match ? "✓" : "✕"} {c.check}</li>)}</ul>
-        </div>
-      )}
+      <ErrorBox error={rec.error ? `Experiment failed: ${rec.error}` : null} />
+      <section className="panel" aria-label="Integrity and replay">
+        <header className="panel-head"><h2>Integrity &amp; replay</h2></header>
+        <div className="panel-body"><IntegrityPanel id={rec.experiment_id} completed={ok} /></div>
+      </section>
       {ok && rec.mode === "baseline" && (
         <Panel title="Original dataset & clean decision boundary">
           <PoisonPlot boundary={clean.boundary} rows={rec.training_samples} labelMode="true" highlight="none"

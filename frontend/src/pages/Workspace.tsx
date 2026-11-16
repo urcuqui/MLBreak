@@ -1,18 +1,13 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Link, NavLink, useParams } from "react-router-dom";
-import { api, evidenceLinks, type Ctx } from "../api";
+import { useParams } from "react-router-dom";
+import { api, type Ctx } from "../api";
 import { BoundaryPlot, CLASS_COLORS } from "../components/BoundaryPlot";
 import { LabSwitcher, ScenarioSwitcher } from "../components/LabSwitcher";
-import { Badge, ErrorBox, EvalBadge, ExpLink, Panel, RatioView, StatusBadge, Tile, VulnerableBanner } from "../components/ui";
-import type { AttackConfig, BoundaryResponse, DatasetResponse, Defense, ExperimentRecord, ReplayResult, SampleResult } from "../types";
+import { EvidenceTable, RequiresStep, StepNav, type StepId } from "../components/lab";
+import { Badge, ErrorBox, ExpLink, Panel, RatioView, StatusBadge, Tile, VulnerableBanner } from "../components/ui";
+import type { AttackConfig, BoundaryResponse, DatasetResponse, Defense, ExperimentRecord, SampleResult } from "../types";
 
-type Tab = "baseline" | "attack" | "defend" | "evidence";
-const TABS: { id: Tab; label: string }[] = [
-  { id: "baseline", label: "1 · Baseline" },
-  { id: "attack", label: "2 · Attack" },
-  { id: "defend", label: "3 · Defend" },
-  { id: "evidence", label: "4 · Evidence & replay" },
-];
+type Tab = StepId;
 
 interface Session {
   baseline?: string; single?: string; batch?: string; replay?: string; adaptive?: string;
@@ -59,7 +54,6 @@ export function Workspace() {
   const [defense, setDefense] = useState<Defense>(DEFAULT_DEFENSES.adversarial_training);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [replays, setReplays] = useState<Record<string, ReplayResult>>({});
 
   useEffect(() => saveSession({ ctx, ids }), [ctx, ids]);
 
@@ -105,7 +99,7 @@ export function Workspace() {
     }
   }, []);
 
-  const changeCtx = (c: Ctx) => { setCtx(c); setIds({}); setRecords({}); setReplays({}); setSelected(null); };
+  const changeCtx = (c: Ctx) => { setCtx(c); setIds({}); setRecords({}); setSelected(null); };
 
   const rec = (k: keyof Session) => (ids[k] ? records[ids[k]!] : undefined);
   const baseline = rec("baseline"), single = rec("single"), batch = rec("batch");
@@ -114,19 +108,13 @@ export function Workspace() {
   const selectedSample: SampleResult | undefined =
     single?.samples.find((s) => s.test_index === selected) ?? batch?.samples.find((s) => s.test_index === selected);
 
-  const doReplay = async (id: string) => {
-    setBusy(`replay ${id}`); setError(null);
-    try { const r = await api.replay(id); setReplays((m) => ({ ...m, [id]: r })); }
-    catch (e) { setError(String((e as Error).message ?? e)); }
-    finally { setBusy(null); }
-  };
 
   return (
     <div className="page">
       <div className="page-head">
         <div>
           <div className="eyebrow">OWASP ML01:2023 · Input Manipulation Attack</div>
-          <h1>Evasion lab — two-moons classifier</h1>
+          <h1>2D Classifier Evasion</h1>
           <p className="muted">
             Perturb a correctly classified input within an ε-ball so the deployed system returns the wrong
             class. Every number below comes from an executed experiment with stored evidence.
@@ -149,18 +137,12 @@ export function Workspace() {
       </div>
       <VulnerableBanner />
 
-      <nav className="tabs" aria-label="Lab steps">
-        {TABS.map((t) => (
-          <NavLink key={t.id} to={`/lab/ml01/${t.id}`} className={({ isActive }) => (isActive ? "tab active" : "tab")}>
-            {t.label}
-          </NavLink>
-        ))}
-        <div className="pipeline muted small">
-          {(["baseline", "batch", "replay", "adaptive"] as (keyof Session)[]).map((k) => (
-            <span key={k} className={ids[k] ? "pipe done" : "pipe"}>{ids[k] ? "✓" : "○"} {k}</span>
-          ))}
-        </div>
-      </nav>
+      <StepNav base="ml01" progress={[
+        { label: "baseline", status: ids.baseline ? "done" : "pending" },
+        { label: "attack", status: ids.batch ? "done" : "pending", title: "attack on the test split" },
+        { label: "replay", status: ids.replay ? "done" : "pending" },
+        { label: "adaptive", status: ids.adaptive ? "done" : "pending" },
+      ]} />
 
       <ErrorBox error={error} />
       {busy && <div className="busy" role="status"><span className="spinner" /> Running: {busy}…</div>}
@@ -199,7 +181,7 @@ export function Workspace() {
                 </dl>
               ) : <p className="muted">Loading…</p>}
             </Panel>
-            <SampleInspector dataset={dataset} selected={selected} />
+            <SampleInspector dataset={dataset} selected={selected} onSelect={setSelected} />
           </div>
         </div>
       )}
@@ -215,6 +197,7 @@ export function Workspace() {
           <div className="stack">
             <Panel title="Attack configuration">
               <AttackForm cfg={attack} onChange={setAttack} />
+              {dataset && <div className="mt"><SamplePicker n={dataset.test.X.length} selected={selected} onSelect={setSelected} /></div>}
               <div className="row gap wrap mt">
                 <button className="btn danger" disabled={!!busy || selected == null}
                   onClick={() => run("single", `attack on sample #${selected}`, () => api.attack(ctx, attack, [selected!]))}>
@@ -271,15 +254,15 @@ export function Workspace() {
               <div className="row gap wrap mt">
                 <button className="btn good" disabled={!!busy || !batch || batch.status !== "completed"}
                   onClick={() => run("replay", "defense replay", () => api.defend(batch!.experiment_id, defense))}>
-                  Evaluate defense (replay perturbations)
+                  Replay against defense
                 </button>
                 <button className="btn warning" disabled={!!busy}
                   onClick={() => run("adaptive", "adaptive attack", () =>
                     api.attack(ctx, attack, null, defense, batch?.experiment_id ?? null))}>
-                  Adaptive attack (new experiment)
+                  Run adaptive attack
                 </button>
               </div>
-              {!batch && <p className="muted small mt">Replay needs a test-split attack: run one in the <Link to="/lab/ml01/attack">Attack</Link> step first.</p>}
+              {!batch && <RequiresStep base="ml01" step="attack" what="an attack on the test split" />}
               <div className="callout mt">
                 <strong>Replay ≠ robustness.</strong> <em>Replay</em> re-submits the exact perturbations from{" "}
                 {batch ? <ExpLink id={batch.experiment_id} /> : "the attack experiment"} — crafted without knowledge of the
@@ -312,43 +295,9 @@ export function Workspace() {
       )}
 
       {tab === "evidence" && (
-        <Panel title="Session evidence" subtitle="Each experiment stores machine-readable JSON, a Markdown report and per-sample CSV.">
-          <table className="table">
-            <thead><tr><th>Step</th><th>Experiment</th><th>Type</th><th>Status</th><th>Attack success</th><th>Export</th><th>Exact replay</th></tr></thead>
-            <tbody>
-              {(["baseline", "single", "batch", "replay", "adaptive"] as (keyof Session)[]).map((k) => {
-                const r = rec(k);
-                if (!r) return <tr key={k}><td>{k}</td><td colSpan={6} className="muted">not run</td></tr>;
-                const links = evidenceLinks(r.experiment_id);
-                const rp = replays[r.experiment_id];
-                return (
-                  <tr key={k}>
-                    <td>{k}</td><td><ExpLink id={r.experiment_id} /></td><td><EvalBadge evaluation={r.evaluation} /></td>
-                    <td><StatusBadge status={r.status} /></td>
-                    <td><RatioView r={r.metrics.attack_success_rate} /></td>
-                    <td className="row gap"><a href={links.json} download>JSON</a><a href={links.md} download>MD</a><a href={links.csv} download>CSV</a></td>
-                    <td>
-                      <button className="btn small" disabled={!!busy || r.status !== "completed"} onClick={() => doReplay(r.experiment_id)}>Replay</button>{" "}
-                      {rp && (rp.identical ? <Badge tone="good">identical</Badge> : <Badge tone="critical">diverged</Badge>)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          {Object.values(replays).map((rp) => (
-            <details key={rp.original_experiment_id} className="mt">
-              <summary>Replay checks for {rp.original_experiment_id} → {rp.replay_experiment_id}</summary>
-              <table className="table small">
-                <thead><tr><th>Check</th><th>Original</th><th>Replay</th><th></th></tr></thead>
-                <tbody>{rp.checks.map((c) => (
-                  <tr key={c.check}><td>{c.check}</td><td className="mono hash">{String(c.original)}</td>
-                    <td className="mono hash">{String(c.replay)}</td>
-                    <td>{c.match ? <Badge tone="good">match</Badge> : <Badge tone="critical">differs</Badge>}</td></tr>
-                ))}</tbody>
-              </table>
-            </details>
-          ))}
+        <Panel title="Session evidence" subtitle="JSON (mlbreak.experiment/v2), Markdown report and per-sample CSV for every experiment.">
+          <EvidenceTable disabled={!!busy} rows={(["baseline", "single", "batch", "replay", "adaptive"] as (keyof Session)[])
+            .map((k) => [k === "batch" ? "attack (test split)" : k === "single" ? "attack (one sample)" : k, rec(k)])} />
         </Panel>
       )}
     </div>
@@ -369,12 +318,14 @@ function DefendedPlot({ ctx, defense, dataset, samples, title }: {
   return <BoundaryPlot boundary={b} dataset={dataset} samples={samples} showTrain={false} height={360} title={title} />;
 }
 
-function SampleInspector({ dataset, selected }: { dataset: DatasetResponse | null; selected: number | null }) {
+function SampleInspector({ dataset, selected, onSelect }: { dataset: DatasetResponse | null; selected: number | null;
+  onSelect: (i: number) => void }) {
   if (!dataset || selected == null) return null;
   const x = dataset.test.X[selected], p1 = dataset.test.p1[selected];
   return (
-    <Panel title={`Selected test sample #${selected}`}>
-      <dl className="kv">
+    <Panel title={`Selected test sample #${selected}`} subtitle="Click a test point in the plot, or type its index.">
+      <SamplePicker n={dataset.test.X.length} selected={selected} onSelect={onSelect} />
+      <dl className="kv mt">
         <dt>Input (x1, x2)</dt><dd className="mono">({x[0].toFixed(4)}, {x[1].toFixed(4)})</dd>
         <dt>True label</dt><dd><ClassDot y={dataset.test.y[selected]} /></dd>
         <dt>Prediction</dt><dd><ClassDot y={dataset.test.pred[selected]} /></dd>
@@ -521,3 +472,13 @@ function CapabilityBox({ caps }: { caps: Record<string, unknown> }) {
   );
 }
 
+/** Keyboard alternative to clicking a point in the decision-boundary plot. */
+function SamplePicker({ n, selected, onSelect }: { n: number; selected: number | null; onSelect: (i: number) => void }) {
+  return (
+    <label className="inline-field">Test sample #
+      <input type="number" min={0} max={n - 1} value={selected ?? ""} aria-describedby="sample-picker-help"
+        onChange={(e) => { const v = parseInt(e.target.value, 10); if (v >= 0 && v < n) onSelect(v); }} />
+      <span id="sample-picker-help" className="muted small">0–{n - 1}</span>
+    </label>
+  );
+}

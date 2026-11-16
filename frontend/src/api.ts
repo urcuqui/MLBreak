@@ -35,24 +35,14 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-// Boundary grids can retrain models server-side and share the experiment concurrency gate (HTTP 429 when
-// busy). Pages request several at once, so they are serialised client-side and retried with backoff on 429.
-let boundaryQueue: Promise<unknown> = Promise.resolve();
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// Requests that can train models server-side (boundary grids, dataset views, message lists) share the experiment
+// concurrency gate. A page fires several at once, so they are queued client-side, one at a time: this avoids
+// self-inflicted HTTP 429s instead of relying on retries (which `req` still performs as a fallback).
+let gatedQueue: Promise<unknown> = Promise.resolve();
 
-function serialBoundary<T>(path: string): Promise<T> {
-  const run = async (): Promise<T> => {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        return await req<T>(path);
-      } catch (e) {
-        if (!(e instanceof ApiError) || e.status !== 429 || attempt >= 6) throw e;
-        await sleep(250 * (attempt + 1));
-      }
-    }
-  };
-  const next = boundaryQueue.then(run, run);
-  boundaryQueue = next.catch(() => undefined);
+function serial<T>(fn: () => Promise<T>): Promise<T> {
+  const next = gatedQueue.then(fn, fn);
+  gatedQueue = next.catch(() => undefined);
   return next;
 }
 
@@ -63,10 +53,10 @@ export interface Ctx { model_id: string; seed: number }
 export const api = {
   dashboard: () => req<Dashboard>("/api/dashboard"),
   owasp: () => req<{ taxonomy: string; version: string; url: string; categories: OwaspCategory[] }>("/api/owasp"),
-  dataset: (c: Ctx) => req<DatasetResponse>(
-    `/api/scenarios/ml01-moons-evasion/dataset?model_id=${encodeURIComponent(c.model_id)}&seed=${c.seed}`),
+  dataset: (c: Ctx) => serial(() => req<DatasetResponse>(
+    `/api/scenarios/ml01-moons-evasion/dataset?model_id=${encodeURIComponent(c.model_id)}&seed=${c.seed}`)),
   boundary: (c: Ctx, defense: Defense | null, resolution = 90) =>
-    post<BoundaryResponse>("/api/boundary", { ...c, defense, resolution }),
+    serial(() => post<BoundaryResponse>("/api/boundary", { ...c, defense, resolution })),
   baseline: (c: Ctx, defense: Defense | null = null) =>
     post<ExperimentRecord>("/api/experiments/baseline", { ...c, defense }),
   attack: (c: Ctx, attack: AttackConfig, indices: number[] | null,
@@ -93,12 +83,12 @@ export const api = {
   poisonDefend: (parent_experiment_id: string, defense: KnnDefense) =>
     post<PoisoningRecord>("/api/experiments/poisoning/defend", { parent_experiment_id, defense }),
   experimentBoundary: (id: string, model: ModelKey, resolution = 80) =>
-    serialBoundary<BoundaryResponse>(
-      `/api/experiments/${encodeURIComponent(id)}/boundary?model=${model}&resolution=${resolution}`),
+    serial(() => req<BoundaryResponse>(
+      `/api/experiments/${encodeURIComponent(id)}/boundary?model=${model}&resolution=${resolution}`)),
   // ML01 spam-filter evasion
   textMessages: (model_id: TextModelId, seed: number, label: 0 | 1 | null, limit = 150) =>
-    req<{ dataset: Record<string, unknown>; model: Record<string, unknown>; messages: TextMessage[] }>(
-      `/api/text/messages?model_id=${model_id}&seed=${seed}${label == null ? "" : `&label=${label}`}&limit=${limit}`),
+    serial(() => req<{ dataset: Record<string, unknown>; model: Record<string, unknown>; messages: TextMessage[] }>(
+      `/api/text/messages?model_id=${model_id}&seed=${seed}${label == null ? "" : `&label=${label}`}&limit=${limit}`)),
   textClassify: (model_id: TextModelId, seed: number, text: string, defense: TextDefense | null = null) =>
     post<ClassifyResult>("/api/text/classify", { model_id, seed, text, defense }),
   textBaseline: (model_id: TextModelId, seed: number, defense: TextDefense | null = null) =>

@@ -19,7 +19,7 @@ export function Evidence() {
       <ErrorBox error={error} />
       <div className="grid-2">
         <Panel title="Experiments">
-          <div className="table-wrap scroll-y"><table className="table">
+          <div className="table-wrap scroll-y" tabIndex={0} role="region" aria-label="Experiments"><table className="table">
             <thead><tr><th>Experiment</th><th>Type</th><th>Status</th><th>Download</th></tr></thead>
             <tbody>{rows.map((r) => {
               const l = evidenceLinks(r.experiment_id);
@@ -34,7 +34,7 @@ export function Evidence() {
           {rows.length === 0 && <p className="muted">No evidence yet.</p>}
         </Panel>
         <Panel title="Report preview" subtitle={sel ? <ExpLink id={sel} /> : undefined}>
-          <pre className="report">{md || "Select an experiment."}</pre>
+          <pre className="report" tabIndex={0} aria-label="Report preview">{md || "Select an experiment."}</pre>
         </Panel>
       </div>
     </div>

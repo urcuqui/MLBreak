@@ -1,19 +1,13 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Link, NavLink, useParams } from "react-router-dom";
-import { api, evidenceLinks, type Ctx } from "../api";
+import { useParams } from "react-router-dom";
+import { api, type Ctx } from "../api";
 import { LabSwitcher } from "../components/LabSwitcher";
+import { EvidenceTable, RequiresStep, StepNav, type StepId } from "../components/lab";
 import { PoisonPlot } from "../components/PoisonPlot";
-import { Badge, ErrorBox, EvalBadge, ExpLink, Panel, RatioView, StatusBadge, Tile, VulnerableBanner } from "../components/ui";
-import type { BoundaryResponse, KnnDefense, LabelFlipConfig, ModelKey, PoisoningRecord, Ratio, ReplayResult,
-  VerifyReport } from "../types";
+import { ErrorBox, ExpLink, Panel, RatioView, StatusBadge, Tile, VulnerableBanner } from "../components/ui";
+import type { BoundaryResponse, KnnDefense, LabelFlipConfig, ModelKey, PoisoningRecord, Ratio } from "../types";
 
-type Tab = "baseline" | "attack" | "defend" | "evidence";
-const TABS: { id: Tab; label: string }[] = [
-  { id: "baseline", label: "1 · Clean training" },
-  { id: "attack", label: "2 · Poison & retrain" },
-  { id: "defend", label: "3 · Defend (replay)" },
-  { id: "evidence", label: "4 · Evidence & replay" },
-];
+type Tab = StepId;
 
 interface Session { baseline?: string; attack?: string; defend?: string }
 const SESSION_KEY = "mlbreak.ml02.session";
@@ -54,8 +48,6 @@ export function PoisoningWorkspace() {
   const [defense, setDefense] = useState<KnnDefense>(DEFAULT_DEFENSE);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [replays, setReplays] = useState<Record<string, ReplayResult>>({});
-  const [verifies, setVerifies] = useState<Record<string, VerifyReport>>({});
 
   useEffect(() => {
     try { localStorage.setItem(SESSION_KEY, JSON.stringify({ ctx, ids })); } catch { /* ignore */ }
@@ -85,25 +77,18 @@ export function PoisoningWorkspace() {
     }
   }, []);
 
-  const changeCtx = (c: Ctx) => { setCtx(c); setIds({}); setRecords({}); setReplays({}); setVerifies({}); };
+  const changeCtx = (c: Ctx) => { setCtx(c); setIds({}); setRecords({}); };
   const rec = (k: keyof Session) => (ids[k] ? records[ids[k]!] : undefined);
   const baseline = rec("baseline"), attack = rec("attack"), defend = rec("defend");
   const domain = (attack ?? baseline)?.dataset.domain as number[][] | undefined;
 
-  const act = async (id: string, kind: "replay" | "verify") => {
-    setBusy(`${kind} ${id}`); setError(null);
-    try {
-      if (kind === "replay") { const r = await api.replay(id); setReplays((m) => ({ ...m, [id]: r })); }
-      else { const v = await api.verify(id); setVerifies((m) => ({ ...m, [id]: v })); }
-    } catch (e) { setError(String((e as Error).message ?? e)); } finally { setBusy(null); }
-  };
 
   return (
     <div className="page">
       <div className="page-head">
         <div>
           <div className="eyebrow">OWASP ML02:2023 · Data Poisoning Attack</div>
-          <h1>Poisoning lab — label flipping</h1>
+          <h1>Label-Flipping Poisoning</h1>
           <p className="muted">
             Flip the labels of part of the training set, retrain, and measure the damage; then replay the exact
             poisoned set through a label-validation defense. Every chart is built from a stored experiment: boundary
@@ -129,18 +114,12 @@ export function PoisoningWorkspace() {
         For education and defensive research only, on bundled synthetic data. Local use only.
       </VulnerableBanner>
 
-      <nav className="tabs" aria-label="Lab steps">
-        {TABS.map((t) => (
-          <NavLink key={t.id} to={`/lab/ml02/${t.id}`} className={({ isActive }) => (isActive ? "tab active" : "tab")}>
-            {t.label}
-          </NavLink>
-        ))}
-        <div className="pipeline muted small">
-          {(["baseline", "attack", "defend"] as (keyof Session)[]).map((k) => (
-            <span key={k} className={ids[k] ? "pipe done" : "pipe"}>{ids[k] ? "✓" : "○"} {k}</span>
-          ))}
-        </div>
-      </nav>
+      <StepNav base="ml02" progress={[
+        { label: "baseline", status: ids.baseline ? "done" : "pending" },
+        { label: "attack", status: ids.attack ? "done" : "pending", title: "label flipping + retraining" },
+        { label: "replay", status: ids.defend ? "done" : "pending", title: "defensive replay of the exact poisoned training set" },
+        { label: "adaptive", status: "unsupported", title: "adaptive: not available in this lab — no poisoner that anticipates the sanitiser is implemented" },
+      ]} />
 
       <ErrorBox error={error} />
       {busy && <div className="busy" role="status"><span className="spinner" /> Running: {busy}…</div>}
@@ -151,12 +130,12 @@ export function PoisoningWorkspace() {
       {tab === "attack" && (
         <>
           <div className="grid-2">
-            <Panel title="Poisoning configuration">
+            <Panel title="Attack configuration" subtitle="Label flipping of the training set, then retraining.">
               <PoisonForm cfg={poison} onChange={setPoison} />
               <div className="row gap wrap mt">
                 <button className="btn danger" disabled={!!busy}
                   onClick={() => run("attack", "label flipping + retraining", () => api.poisonAttack(ctx, poison))}>
-                  Poison training set & retrain
+                  Run poisoning attack
                 </button>
               </div>
             </Panel>
@@ -181,16 +160,15 @@ export function PoisoningWorkspace() {
       {tab === "defend" && (
         <>
           <div className="grid-2">
-            <Panel title="Defense: kNN label sanitisation">
+            <Panel title="Defense configuration" subtitle="kNN label sanitisation (after Paudice et al., 2018).">
               <DefenseForm cfg={defense} onChange={setDefense} />
               <div className="row gap wrap mt">
                 <button className="btn good" disabled={!!busy || !attack || attack.status !== "completed"}
                   onClick={() => run("defend", "defensive replay", () => api.poisonDefend(attack!.experiment_id, defense))}>
-                  Replay poisoned set through the defense
+                  Replay against defense
                 </button>
               </div>
-              {!attack && <p className="muted small mt">Run a poisoning experiment in the{" "}
-                <Link to="/lab/ml02/attack">Poison</Link> step first.</p>}
+              {!attack && <RequiresStep base="ml02" step="attack" what="a poisoning attack" />}
               <div className="callout mt">
                 <strong>Replay ≠ robustness.</strong> The defense sees the <em>exact</em> poisoned labels of{" "}
                 {attack ? <ExpLink id={attack.experiment_id} /> : "the poisoning experiment"}, and the server checks that the
@@ -198,7 +176,7 @@ export function PoisoningWorkspace() {
                 the <em>boundary</em> selection, whose flips sit where neighbours already agree with them.
               </div>
             </Panel>
-            <Panel title="Defense results" subtitle={defend ? <ExpLink id={defend.experiment_id} /> : "not run"}>
+            <Panel title="Defense comparison" subtitle={defend ? <ExpLink id={defend.experiment_id} /> : "not run"}>
               {defend ? <DefenseResults rec={defend} /> : <p className="muted">No defensive replay yet.</p>}
             </Panel>
           </div>
@@ -208,42 +186,10 @@ export function PoisoningWorkspace() {
       )}
 
       {tab === "evidence" && (
-        <Panel title="Session evidence" subtitle="JSON (mlbreak.poisoning/v1), Markdown and CSV (training + test rows).">
-          <div className="table-wrap"><table className="table">
-            <thead><tr><th>Step</th><th>Experiment</th><th>Type</th><th>Status</th><th>Attack success</th><th>Export</th>
-              <th>Integrity</th><th>Exact replay</th></tr></thead>
-            <tbody>
-              {(["baseline", "attack", "defend"] as (keyof Session)[]).map((k) => {
-                const r = rec(k);
-                if (!r) return <tr key={k}><td>{k}</td><td colSpan={7} className="muted">not run</td></tr>;
-                const l = evidenceLinks(r.experiment_id), rp = replays[r.experiment_id], v = verifies[r.experiment_id];
-                return (
-                  <tr key={k}>
-                    <td>{k}</td><td><ExpLink id={r.experiment_id} /></td><td><EvalBadge evaluation={r.evaluation} /></td>
-                    <td><StatusBadge status={r.status} /></td><td><RatioView r={r.metrics.attack_success_rate} /></td>
-                    <td className="row gap"><a href={l.json} download>JSON</a><a href={l.md} download>MD</a><a href={l.csv} download>CSV</a></td>
-                    <td><button className="btn small" disabled={!!busy} onClick={() => act(r.experiment_id, "verify")}>Verify</button>{" "}
-                      {v && (v.ok ? <Badge tone="good">consistent</Badge> : <Badge tone="critical">failed</Badge>)}</td>
-                    <td><button className="btn small" disabled={!!busy || r.status !== "completed"}
-                      onClick={() => act(r.experiment_id, "replay")}>Replay</button>{" "}
-                      {rp && (rp.identical ? <Badge tone="good">identical</Badge> : <Badge tone="critical">diverged</Badge>)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table></div>
-          <p className="muted small mt">Verify recomputes the SHA-256 fingerprints and re-derives every metric from the
-            stored rows. It proves internal consistency, <strong>not authenticity</strong>: anyone who can rewrite the file can
-            recompute the hashes. Replay re-executes the experiment, and is refused if verification fails.</p>
-          {Object.values(replays).map((rp) => (
-            <details key={rp.original_experiment_id} className="mt">
-              <summary>Replay checks for {rp.original_experiment_id} → {rp.replay_experiment_id}</summary>
-              <table className="table small"><tbody>{rp.checks.map((c) => (
-                <tr key={c.check}><td>{c.check}</td><td className="mono hash">{String(c.original)}</td>
-                  <td>{c.match ? <Badge tone="good">match</Badge> : <Badge tone="critical">differs</Badge>}</td></tr>
-              ))}</tbody></table>
-            </details>
-          ))}
+        <Panel title="Session evidence" subtitle="JSON (mlbreak.poisoning/v1), Markdown report and CSV (training + test rows) for every experiment.">
+          <EvidenceTable disabled={!!busy} rows={[["baseline", baseline], ["attack (poisoning)", attack], ["replay", defend]]} />
+          <p className="muted small mt">Adaptive evaluation is not available for ML02: no poisoner that anticipates the
+            sanitiser is implemented (see the defense limitations in each report).</p>
         </Panel>
       )}
     </div>
@@ -266,8 +212,8 @@ function BaselineTab({ ctx, baseline, busy, domain, onRun }: { ctx: Ctx; baselin
         ) : <p className="muted">Run the clean training baseline to plot the dataset and the clean boundary.</p>}
       </Panel>
       <div className="stack">
-        <Panel title="Clean training baseline" actions={
-          <button className="btn primary" disabled={busy} onClick={onRun}>Train on clean labels</button>}>
+        <Panel title="Baseline evaluation" subtitle="Model trained on the clean labels, evaluated on the clean test split." actions={
+          <button className="btn primary" disabled={busy} onClick={onRun}>Run baseline</button>}>
           {baseline ? (
             <>
               <div className="tiles">

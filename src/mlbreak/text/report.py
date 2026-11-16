@@ -37,68 +37,50 @@ def _ratio(r: dict | None) -> str:
     return ("undefined (empty denominator)" if v is None else f"{100 * v:.1f}%") + f" ({r['numerator']}/{r['denominator']})"
 
 
-def render_text_markdown(rec: TextEvasionRecord) -> str:
+def render_text_markdown(rec: TextEvasionRecord, verification: dict | None = None) -> str:
+    """ML01 spam-filter evasion report (shared seven-section structure, see mlbreak.reporting)."""
+    from ..reporting import SEMANTIC_DISCLAIMER, compose, json_block
     m = rec.metrics
-    lines = [f"# MLBreak experiment {rec.experiment_id}", "",
-             f"> **Intentionally vulnerable scenario:** {'yes' if rec.intentionally_vulnerable else 'no (defended system)'}."
-             " Educational use only.", "",
-             "| Field | Value |", "|---|---|",
-             f"| OWASP category | {rec.owasp['id']} — {rec.owasp['name']} ({rec.owasp['taxonomy']} {rec.owasp['taxonomy_version']}) |",
-             f"| Scenario | `{rec.scenario_id}` (spam-filter evasion, character-level) |",
-             f"| Mode / evaluation | {rec.mode} / {rec.evaluation} |",
-             f"| Status | **{rec.status}** |", f"| Created | {rec.created_at} |", f"| Seed | {rec.seed} |",
-             f"| Model | `{rec.model['model_id']}` ({rec.model['estimator']}) |",
-             f"| Base model artifact SHA-256 | `{rec.model['artifact_sha256']}` |",
-             f"| Deployed system artifact SHA-256 | `{rec.target_system.get('model_artifact_sha256')}` |",
-             f"| Dataset / split | `{rec.dataset['dataset_id']}` / `{rec.dataset['split_id']}` |",
-             f"| Train / test split SHA-256 | `{rec.dataset['train_sha256']}` / `{rec.dataset['test_sha256']}` |",
-             f"| Evidence schema | `{rec.schema_version}` |"]
-    if rec.parent_experiment_id:
-        lines.append(f"| Parent experiment | `{rec.parent_experiment_id}` |")
-    if rec.replay_of:
-        lines.append(f"| Replay of | `{rec.replay_of}` |")
-    if rec.error:
-        lines += ["", f"**Error:** {rec.error}"]
-    lines += ["", "## TF-IDF configuration", "", "```json", json.dumps(rec.model.get("tfidf"), indent=2), "```"]
-    if rec.attacker_capabilities:
-        lines += ["", "## Attacker capabilities", ""] + [f"- **{k}**: {v}" for k, v in rec.attacker_capabilities.items()]
+    summary = [("Model", f"`{rec.model['model_id']}` ({rec.model['estimator']})")]
+    config = ["| Item | Value |", "|---|---|",
+              f"| Base model artifact SHA-256 | `{rec.model['artifact_sha256']}` |",
+              f"| Deployed system artifact SHA-256 | `{rec.target_system.get('model_artifact_sha256')}` |",
+              f"| Dataset / split | `{rec.dataset['dataset_id']}` / `{rec.dataset['split_id']}` |",
+              f"| Dataset license | {rec.dataset.get('license')} (DOI {rec.dataset.get('doi')}) |",
+              f"| Train / test split SHA-256 | `{rec.dataset['train_sha256']}` / `{rec.dataset['test_sha256']}` |",
+              "", "### TF-IDF configuration", "", *json_block(rec.model.get("tfidf"))]
     if rec.attack_config:
-        lines += ["", "## Attack configuration", "", "```json", json.dumps(rec.attack_config, indent=2), "```"]
-    lines += ["", "## Defense configuration", ""]
-    lines += (["```json", json.dumps(rec.defense_config, indent=2), "```"] if rec.defense_config
-              else ["None — the undefended (intentionally vulnerable) classifier was evaluated."])
+        config += ["", "### Attack configuration", "", *json_block(rec.attack_config)]
+    config += ["", "### Defense configuration", ""]
+    config += json_block(rec.defense_config) if rec.defense_config else \
+        ["None — the undefended (intentionally vulnerable) classifier was evaluated."]
+    out: list[str] = []
     if m:
-        lines += ["", "## Metrics", "", "| Metric | Value |", "|---|---|"]
-        lines += [f"| {k} | {_ratio(m[k])} |" for k in _METRICS if k in m]
+        out += ["| Metric | Value |", "|---|---|"] + [f"| {k} | {_ratio(m[k])} |" for k in _METRICS if k in m]
         if "outcomes" in m:
-            lines += ["", "### Outcome partition", "", "| Outcome | Count |", "|---|---|"]
-            lines += [f"| {k} | {v} |" for k, v in m["outcomes"]["counts"].items()]
-            lines.append(f"| **total** | **{m['outcomes']['n_selected']}** |")
+            out += ["", "### Outcome partition", "", "| Outcome | Count |", "|---|---|"]
+            out += [f"| {k} | {v} |" for k, v in m["outcomes"]["counts"].items()]
+            out.append(f"| **total** | **{m['outcomes']['n_selected']}** |")
         if "effort" in m:
-            e = m["effort"]
-            lines += ["", "### Attack effort", ""] + [f"- **{k}**: {v}" for k, v in e.items() if k != "definition"]
+            out += ["", "### Attack effort", ""] + [f"- **{k}**: {v}" for k, v in m["effort"].items() if k != "definition"]
         if "comparison" in m:
-            lines += ["", "### Undefended vs defended", "", "| | Undefended | Defended |", "|---|---|---|"]
-            lines += [f"| {k} | {_ratio(v['undefended'])} | {_ratio(v['defended'])} |" for k, v in m["comparison"].items()]
-        lines += ["", "### Metric definitions", ""]
-        lines += [f"- **{k}**: {m[k]['definition']}. *Population:* {m[k]['population']}." for k in _METRICS if k in m]
-    attacked = [s for s in rec.samples if s.text_adversarial is not None]
+            out += ["", "### Undefended vs defended", "", "| | Undefended | Defended |", "|---|---|---|"]
+            out += [f"| {k} | {_ratio(v['undefended'])} | {_ratio(v['defended'])} |" for k, v in m["comparison"].items()]
+        out += ["", "### Metric definitions", ""]
+        out += [f"- **{k}**: {m[k]['definition']}. *Population:* {m[k]['population']}." for k in _METRICS if k in m]
+    attacked = [x for x in rec.samples if x.text_adversarial is not None]
     if attacked:
-        lines += ["", "## Messages (first 15 attacked)", ""]
-        for s in attacked[:15]:
-            lines += [f"**test #{s.test_index} — {s.outcome}** · P(spam) {s.p_spam_original:.3f} → "
-                      f"{s.p_spam_adversarial:.3f} · {s.queries} queries · edit distance {s.edit_distance}", "",
-                      f"- original: `{visible(s.text_original)}`", f"- adversarial: `{visible(s.text_adversarial)}`"]
-            if s.edits:
-                lines.append("- edits: " + "; ".join(f"{e.op} `{visible(e.word_before)}`→`{visible(e.word_after)}`"
-                                                      for e in s.edits))
-            failed = [k for k, v in (s.constraints or {}).items() if not v]
-            lines += [f"- constraints: {'all satisfied' if not failed else 'VIOLATED: ' + ', '.join(failed)}", ""]
+        out += ["", "### Messages (first 15 attacked)", "", f"> {SEMANTIC_DISCLAIMER}", ""]
+        for x in attacked[:15]:
+            out += [f"**test #{x.test_index} — {x.outcome}** · P(spam) {x.p_spam_original:.3f} → "
+                    f"{x.p_spam_adversarial:.3f} · {x.queries} queries · edit distance {x.edit_distance}", "",
+                    f"- original: `{visible(x.text_original)}`", f"- adversarial: `{visible(x.text_adversarial)}`"]
+            if x.edits:
+                out.append("- edits: " + "; ".join(f"{e.op} `{visible(e.word_before)}`→`{visible(e.word_after)}`"
+                                                   for e in x.edits))
+            failed = [k for k, v in (x.constraints or {}).items() if not v]
+            out += [f"- constraints: {'all satisfied' if not failed else 'VIOLATED: ' + ', '.join(failed)}", ""]
     notes = NOTES.get(rec.evaluation, [])
     if notes:
-        lines += ["", "### Notes", ""] + [f"- {n}" for n in notes]
-    if rec.lineage:
-        lines += ["", "## Lineage", "", "```json", json.dumps(rec.lineage, indent=2), "```"]
-    lines += ["", "## Reproducibility", "", "```json", json.dumps(rec.reproducibility, indent=2), "```", "",
-              f"Replay with: `mlbreak replay {rec.experiment_id}` · verify with: `mlbreak check {rec.experiment_id}`", ""]
-    return "\n".join(lines)
+        out += ["", "### Notes", ""] + [f"- {n}" for n in notes]
+    return compose(rec, summary_rows=summary, configuration=config, outcomes=out, verification=verification)

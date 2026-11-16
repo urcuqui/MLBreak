@@ -1,19 +1,14 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Link, NavLink, useParams } from "react-router-dom";
-import { api, evidenceLinks } from "../api";
+import { useParams } from "react-router-dom";
+import { api } from "../api";
 import { LabSwitcher, ScenarioSwitcher } from "../components/LabSwitcher";
+import { EvidenceTable, RequiresStep, StepNav, type StepId } from "../components/lab";
 import { SpamBar, TextDiff } from "../components/TextDiff";
-import { Badge, ErrorBox, EvalBadge, ExpLink, Panel, RatioView, StatusBadge, Tile, VulnerableBanner } from "../components/ui";
-import type { ClassifyResult, ReplayResult, TextAttackConfig, TextCharset, TextDefense, TextMessage, TextModelId, TextOp,
-  TextOutcome, TextRecord, TextSample, VerifyReport } from "../types";
+import { Badge, ErrorBox, ExpLink, Panel, RatioView, StatusBadge, Tile, VulnerableBanner } from "../components/ui";
+import type { ClassifyResult, TextAttackConfig, TextCharset, TextDefense, TextMessage, TextModelId, TextOp,
+  TextOutcome, TextRecord, TextSample } from "../types";
 
-type Tab = "baseline" | "attack" | "defend" | "evidence";
-const TABS: { id: Tab; label: string }[] = [
-  { id: "baseline", label: "1 · Classifier" },
-  { id: "attack", label: "2 · Attack" },
-  { id: "defend", label: "3 · Defend" },
-  { id: "evidence", label: "4 · Evidence & replay" },
-];
+type Tab = StepId;
 interface Session { baseline?: string; single?: string; batch?: string; replay?: string; adaptive?: string }
 interface Ctx { model_id: TextModelId; seed: number }
 const SESSION_KEY = "mlbreak.ml01spam.session";
@@ -60,7 +55,10 @@ export function SampleView({ s, cfg }: { s: TextSample; cfg: TextAttackConfig | 
     <div className="stack">
       <div className="row gap wrap"><OutcomeBadge o={s.outcome} /><span className="muted small">test message #{s.test_index} · true label {label(s.y_true)}</span></div>
       <TextDiff original={s.text_original} adversarial={s.text_adversarial} />
-      <div className="table-wrap"><table className="table">
+      {s.text_adversarial != null && (
+        <p className="muted small" role="note">Constraint checks are proxies for text preservation: a constraint-valid
+          message is not proof that its meaning is preserved (no human or semantic check is performed).</p>)}
+      <div className="table-wrap" tabIndex={0} role="region" aria-label={`Predictions for message ${s.test_index}`}><table className="table">
         <thead><tr><th></th><th>Original</th><th>Adversarial</th></tr></thead>
         <tbody>
           <tr><td>Prediction</td><td>{label(s.pred_original)}</td><td>{label(s.pred_adversarial)}</td></tr>
@@ -102,7 +100,7 @@ export function TextCompare({ cols }: { cols: [string, TextRecord | undefined][]
     ["Status", (r) => <StatusBadge status={r.status} />],
   ];
   return (
-    <div className="table-wrap">
+    <div className="table-wrap" tabIndex={0} role="region" aria-label="Metric comparison">
       <table className="table">
         <thead><tr><th>Metric</th>{cols.map(([l]) => <th key={l}>{l}</th>)}</tr></thead>
         <tbody>{rows.map(([n, f]) => (
@@ -130,8 +128,6 @@ export function SpamWorkspace() {
   const [classified, setClassified] = useState<ClassifyResult | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [replays, setReplays] = useState<Record<string, ReplayResult>>({});
-  const [verifies, setVerifies] = useState<Record<string, VerifyReport>>({});
 
   useEffect(() => { try { localStorage.setItem(SESSION_KEY, JSON.stringify({ ctx, ids })); } catch { /* ignore */ } }, [ctx, ids]);
   useEffect(() => {
@@ -159,19 +155,12 @@ export function SpamWorkspace() {
       if (rec.status !== "completed") setError(`Experiment ${rec.experiment_id} failed: ${rec.error}`);
     } catch (e) { setError(String((e as Error).message ?? e)); } finally { setBusy(null); }
   }, []);
-  const act = async (id: string, kind: "replay" | "verify") => {
-    setBusy(`${kind} ${id}`); setError(null);
-    try {
-      if (kind === "replay") { const r = await api.replay(id); setReplays((m) => ({ ...m, [id]: r })); }
-      else { const v = await api.verify(id); setVerifies((m) => ({ ...m, [id]: v })); }
-    } catch (e) { setError(String((e as Error).message ?? e)); } finally { setBusy(null); }
-  };
   const classify = async () => {
     setBusy("classify"); setError(null);
     try { setClassified(await api.textClassify(ctx.model_id, ctx.seed, freeText)); }
     catch (e) { setError(String((e as Error).message ?? e)); } finally { setBusy(null); }
   };
-  const changeCtx = (c: Ctx) => { setCtx(c); setIds({}); setRecords({}); setReplays({}); setVerifies({}); setClassified(null); };
+  const changeCtx = (c: Ctx) => { setCtx(c); setIds({}); setRecords({}); setClassified(null); };
 
   const rec = (k: keyof Session) => (ids[k] ? records[ids[k]!] : undefined);
   const baseline = rec("baseline"), single = rec("single"), batch = rec("batch"), replay = rec("replay"), adaptive = rec("adaptive");
@@ -183,8 +172,8 @@ export function SpamWorkspace() {
     <div className="page">
       <div className="page-head">
         <div>
-          <div className="eyebrow">OWASP ML01:2023 · Input Manipulation Attack · scenario 2</div>
-          <h1>Spam-filter evasion — character-level attacks</h1>
+          <div className="eyebrow">OWASP ML01:2023 · Input Manipulation Attack</div>
+          <h1>Spam Filter Evasion</h1>
           <p className="muted">A TF-IDF spam filter trained on the bundled SMS Spam Collection (CC BY 4.0) is attacked with a
             DeepWordBug-style black-box search that swaps, substitutes, deletes or inserts characters under explicit
             text-preservation constraints. Every number below comes from an executed experiment with stored evidence.</p>
@@ -207,21 +196,20 @@ export function SpamWorkspace() {
       <VulnerableBanner>The undefended spam filter in this scenario is deliberately exposed to character-level evasion, on
         bundled public data, for education and defensive research. Local use only.</VulnerableBanner>
 
-      <nav className="tabs" aria-label="Lab steps">
-        {TABS.map((t) => <NavLink key={t.id} to={`/lab/ml01/spam/${t.id}`} className={({ isActive }) => (isActive ? "tab active" : "tab")}>{t.label}</NavLink>)}
-        <div className="pipeline muted small">
-          {(["baseline", "batch", "replay", "adaptive"] as (keyof Session)[]).map((k) => (
-            <span key={k} className={ids[k] ? "pipe done" : "pipe"}>{ids[k] ? "✓" : "○"} {k}</span>))}
-        </div>
-      </nav>
+      <StepNav base="ml01/spam" progress={[
+        { label: "baseline", status: ids.baseline ? "done" : "pending" },
+        { label: "attack", status: ids.batch ? "done" : "pending", title: "attack on a batch of held-out messages" },
+        { label: "replay", status: ids.replay ? "done" : "pending" },
+        { label: "adaptive", status: ids.adaptive ? "done" : "pending" },
+      ]} />
       <ErrorBox error={error} />
       {busy && <div className="busy" role="status"><span className="spinner" /> Running: {busy}…</div>}
 
       {tab === "baseline" && (
         <div className="grid-2">
           <div className="stack">
-            <Panel title="Bundled classifier" actions={<button className="btn primary" disabled={!!busy}
-              onClick={() => run("baseline", "clean evaluation", () => api.textBaseline(ctx.model_id, ctx.seed))}>Load & evaluate</button>}>
+            <Panel title="Baseline evaluation" subtitle="The bundled TF-IDF classifier on the held-out test split." actions={<button className="btn primary" disabled={!!busy}
+              onClick={() => run("baseline", "clean evaluation", () => api.textBaseline(ctx.model_id, ctx.seed))}>Run baseline</button>}>
               {baseline ? (
                 <>
                   <div className="tiles">
@@ -266,11 +254,13 @@ export function SpamWorkspace() {
         <>
           <div className="grid-2">
             <Panel title={`Held-out ${source ? "spam" : "ham"} messages`} subtitle="Click a message to select it. P(spam) is the undefended filter's.">
-              <div className="table-wrap msg-list"><table className="table small">
+              <div className="table-wrap msg-list" tabIndex={0} role="region" aria-label="Held-out messages"><table className="table small">
                 <thead><tr><th>#</th><th>Message</th><th>P(spam)</th></tr></thead>
                 <tbody>{messages.map((m) => (
                   <tr key={m.test_index} className={m.test_index === selected ? "row-active" : ""} onClick={() => setSelected(m.test_index)}>
-                    <td className="num">{m.test_index}</td><td>{m.text.length > 110 ? m.text.slice(0, 110) + "…" : m.text}</td>
+                    <td className="num"><button className="linklike num" aria-pressed={m.test_index === selected}
+                      aria-label={`Select message ${m.test_index}`} onClick={(e) => { e.stopPropagation(); setSelected(m.test_index); }}>{m.test_index}</button></td>
+                    <td>{m.text.length > 110 ? m.text.slice(0, 110) + "…" : m.text}</td>
                     <td className="num">{m.p_spam.toFixed(3)}{m.pred !== m.y_true && <> <Badge tone="neutral">misclassified</Badge></>}</td>
                   </tr>))}</tbody>
               </table></div>
@@ -306,7 +296,7 @@ export function SpamWorkspace() {
       {tab === "defend" && (
         <>
           <div className="grid-2">
-            <Panel title="Defensive control">
+            <Panel title="Defense configuration">
               <TextDefenseForm cfg={defense} onChange={setDefense} />
               <div className="form mt">
                 <label>Adaptive effort: edits per word
@@ -318,13 +308,13 @@ export function SpamWorkspace() {
               </div>
               <div className="row gap wrap mt">
                 <button className="btn good" disabled={!!busy || !batch || batch.status !== "completed"}
-                  onClick={() => run("replay", "defense replay", () => api.textDefend(batch!.experiment_id, defense))}>Replay adversarial messages</button>
+                  onClick={() => run("replay", "defense replay", () => api.textDefend(batch!.experiment_id, defense))}>Replay against defense</button>
                 <button className="btn warning" disabled={!!busy || !batch}
                   onClick={() => run("adaptive", "adaptive attack", () => api.textAttack(ctx.model_id, ctx.seed,
                     { ...(batch!.attack_config as TextAttackConfig), ...effort }, batch!.samples.map((s) => s.test_index), 0, defense, batch!.experiment_id))}>
-                  Adaptive attack (new experiment)</button>
+                  Run adaptive attack</button>
               </div>
-              {!batch && <p className="muted small mt">Run a batch attack in the <Link to="/lab/ml01/spam/attack">Attack</Link> step first.</p>}
+              {!batch && <RequiresStep base="ml01/spam" step="attack" what="an attack on a batch of messages" />}
               <div className="callout mt"><strong>Replay ≠ robustness.</strong> <em>Replay</em> re-submits the exact adversarial messages of{" "}
                 {batch ? <ExpLink id={batch.experiment_id} /> : "the attack"}. The <em>adaptive attack</em> is a new search that queries the
                 defended pipeline (normalisation is inside its loop), on the same messages and under the same text-preservation
@@ -349,28 +339,9 @@ export function SpamWorkspace() {
       )}
 
       {tab === "evidence" && (
-        <Panel title="Session evidence" subtitle="JSON (mlbreak.text-evasion/v1), Markdown report and per-message CSV.">
-          <div className="table-wrap"><table className="table">
-            <thead><tr><th>Step</th><th>Experiment</th><th>Type</th><th>Status</th><th>Attack success</th><th>Export</th><th>Integrity</th><th>Exact replay</th></tr></thead>
-            <tbody>{(["baseline", "single", "batch", "replay", "adaptive"] as (keyof Session)[]).map((k) => {
-              const r = rec(k);
-              if (!r) return <tr key={k}><td>{k}</td><td colSpan={7} className="muted">not run</td></tr>;
-              const l = evidenceLinks(r.experiment_id), rp = replays[r.experiment_id], v = verifies[r.experiment_id];
-              return (
-                <tr key={k}>
-                  <td>{k}</td><td><ExpLink id={r.experiment_id} /></td><td><EvalBadge evaluation={r.evaluation} /></td>
-                  <td><StatusBadge status={r.status} /></td><td><RatioView r={r.metrics.attack_success_rate} /></td>
-                  <td className="row gap"><a href={l.json} download>JSON</a><a href={l.md} download>MD</a><a href={l.csv} download>CSV</a></td>
-                  <td><button className="btn small" disabled={!!busy} onClick={() => act(r.experiment_id, "verify")}>Verify</button>{" "}
-                    {v && (v.ok ? <Badge tone="good">consistent</Badge> : <Badge tone="critical">failed</Badge>)}</td>
-                  <td><button className="btn small" disabled={!!busy || r.status !== "completed"} onClick={() => act(r.experiment_id, "replay")}>Replay</button>{" "}
-                    {rp && (rp.identical ? <Badge tone="good">identical</Badge> : <Badge tone="critical">diverged</Badge>)}</td>
-                </tr>);
-            })}</tbody>
-          </table></div>
-          <p className="muted small mt">Verify re-derives every metric and re-validates every adversarial message's constraints from the
-            stored text and edit script. It proves internal consistency, <strong>not authenticity</strong>. Replay re-executes the
-            experiment and is refused if verification fails.</p>
+        <Panel title="Session evidence" subtitle="JSON (mlbreak.text-evasion/v1), Markdown report and per-message CSV for every experiment.">
+          <EvidenceTable disabled={!!busy} rows={(["baseline", "single", "batch", "replay", "adaptive"] as (keyof Session)[])
+            .map((k) => [k === "batch" ? "attack (batch)" : k === "single" ? "attack (one message)" : k, rec(k)])} />
         </Panel>
       )}
     </div>
@@ -379,11 +350,13 @@ export function SpamWorkspace() {
 
 function SampleTable({ rec, onPick, selected }: { rec: TextRecord; onPick: (i: number) => void; selected: number | null }) {
   return (
-    <div className="table-wrap msg-list mt"><table className="table small">
+    <div className="table-wrap msg-list mt" tabIndex={0} role="region" aria-label="Attacked messages"><table className="table small">
       <thead><tr><th>#</th><th>Outcome</th><th>P(spam) clean → adv</th><th>Queries</th><th>Edits</th></tr></thead>
       <tbody>{rec.samples.map((s) => (
         <tr key={s.test_index} className={s.test_index === selected ? "row-active" : ""} onClick={() => onPick(s.test_index)}>
-          <td className="num">{s.test_index}</td><td><OutcomeBadge o={s.outcome} /></td>
+          <td className="num"><button className="linklike num" aria-pressed={s.test_index === selected}
+            aria-label={`Show message ${s.test_index}`} onClick={(e) => { e.stopPropagation(); onPick(s.test_index); }}>{s.test_index}</button></td>
+          <td><OutcomeBadge o={s.outcome} /></td>
           <td className="num">{s.p_spam_original.toFixed(3)} → {s.p_spam_adversarial?.toFixed(3) ?? "—"}</td>
           <td className="num">{s.queries ?? "—"}</td><td className="num">{s.edit_distance ?? "—"}</td>
         </tr>))}</tbody>

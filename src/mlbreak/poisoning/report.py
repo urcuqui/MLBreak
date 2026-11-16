@@ -43,77 +43,45 @@ def _ratio(r: dict | None) -> str:
     return f"{pct} ({r['numerator']}/{r['denominator']})"
 
 
-def render_poisoning_markdown(rec: PoisoningRecord) -> str:
+def render_poisoning_markdown(rec: PoisoningRecord, verification: dict | None = None) -> str:
+    """ML02 poisoning report (shared seven-section structure, see mlbreak.reporting)."""
+    from ..reporting import compose, json_block
     m = rec.metrics
-    lines = [
-        f"# MLBreak experiment {rec.experiment_id}",
-        "",
-        "> **Intentionally vulnerable scenario:** "
-        f"{'yes' if rec.intentionally_vulnerable else 'no (defended training pipeline)'}. Educational use only.",
-        "",
-        "| Field | Value |", "|---|---|",
-        f"| OWASP category | {rec.owasp['id']} — {rec.owasp['name']} ({rec.owasp['taxonomy']} "
-        f"{rec.owasp['taxonomy_version']}) |",
-        f"| Scenario | `{rec.scenario_id}` |",
-        f"| Mode / evaluation | {rec.mode} / {rec.evaluation} |",
-        f"| Status | **{rec.status}** |",
-        f"| Created | {rec.created_at} |",
-        f"| Seed | {rec.seed} |",
-        f"| Model | `{rec.model['model_id']}` ({rec.model['estimator']}) |",
-    ]
-    for which, d in rec.models.items():
-        if d:
-            lines.append(f"| {which} model artifact SHA-256 | `{d['artifact_sha256']}` |")
-    lines += [f"| Dataset / split | `{rec.dataset['dataset_id']}` / `{rec.dataset['split_id']}` |",
-              f"| Train split SHA-256 | `{rec.dataset['train_sha256']}` |",
-              f"| Evidence schema | `{rec.schema_version}` |"]
-    if rec.parent_experiment_id:
-        lines.append(f"| Parent experiment | `{rec.parent_experiment_id}` |")
-    if rec.replay_of:
-        lines.append(f"| Replay of | `{rec.replay_of}` |")
-    if rec.error:
-        lines += ["", f"**Error:** {rec.error}"]
-    if rec.attacker_capabilities:
-        lines += ["", "## Attacker capabilities", ""] + [f"- **{k}**: {v}" for k, v in rec.attacker_capabilities.items()]
+    summary = [("Model", f"`{rec.model['model_id']}` ({rec.model['estimator']})")]
+    config = ["| Item | Value |", "|---|---|"]
+    config += [f"| {which} model artifact SHA-256 | `{d['artifact_sha256']}` |" for which, d in rec.models.items() if d]
+    config += [f"| Dataset / split | `{rec.dataset['dataset_id']}` / `{rec.dataset['split_id']}` |",
+               f"| Train split SHA-256 | `{rec.dataset['train_sha256']}` |"]
     if rec.poison_config:
-        lines += ["", "## Poisoning configuration", "", "```json", json.dumps(rec.poison_config, indent=2), "```"]
+        config += ["", "### Poisoning (attack)", "", *json_block(rec.poison_config)]
     if rec.poisoning and rec.poisoning.get("selection_rule"):
         p = rec.poisoning
-        lines += ["", f"Selection: {p['selection_rule']}. Flipped {p['n_flips']} labels "
-                      f"(budget {p['budget']}, verified).", "",
-                  f"Poisoned training indices: `{p['poisoned_indices']}`"]
-    lines += ["", "## Defense configuration", ""]
-    lines += (["```json", json.dumps(rec.defense_config, indent=2), "```"] if rec.defense_config
-              else ["None — the undefended (intentionally vulnerable) training pipeline was evaluated."])
+        config += ["", f"Selection: {p['selection_rule']}. Flipped {p['n_flips']} labels (budget {p['budget']}, "
+                       "verified).", "", f"Poisoned training indices: `{p['poisoned_indices']}`"]
+    config += ["", "### Defense", ""]
+    config += json_block(rec.defense_config) if rec.defense_config else \
+        ["None — the undefended (intentionally vulnerable) training pipeline was evaluated."]
+    out: list[str] = []
     if m:
-        lines += ["", "## Metrics", "", "| Metric | Value |", "|---|---|"]
-        lines += [f"| {k} | {_ratio(m[k])} |" for k in _HEADLINE if k in m]
+        out += ["| Metric | Value |", "|---|---|"] + [f"| {k} | {_ratio(m[k])} |" for k in _HEADLINE if k in m]
         if "test_accuracy_delta" in m and m["test_accuracy_delta"]["value"] is not None:
-            lines.append(f"| test_accuracy_delta | {100 * m['test_accuracy_delta']['value']:+.1f} pp |")
-        lines += ["", "### Model comparison (test accuracy / recall)", "",
-                  "| Model | Test accuracy | Recall class 0 | Recall class 1 |", "|---|---|---|---|"]
-        for which, b in m.get("by_model", {}).items():
-            lines.append(f"| {which} | {_ratio(b['test_accuracy'])} | {_ratio(b['recall_class_0'])} | "
-                         f"{_ratio(b['recall_class_1'])} |")
+            out.append(f"| test_accuracy_delta | {100 * m['test_accuracy_delta']['value']:+.1f} pp |")
+        out += ["", "### Model comparison (test accuracy / recall)", "",
+                "| Model | Test accuracy | Recall class 0 | Recall class 1 |", "|---|---|---|---|"]
+        out += [f"| {w} | {_ratio(b['test_accuracy'])} | {_ratio(b['recall_class_0'])} | {_ratio(b['recall_class_1'])} |"
+                for w, b in m.get("by_model", {}).items()]
         for key in ("test_outcomes", "defended_test_outcomes"):
             if key in m:
                 o = m[key]
-                lines += ["", f"### Test outcomes: {o['reference']} → {o['compared']}", "",
-                          "| Outcome | Count |", "|---|---|"] + [f"| {k} | {v} |" for k, v in o["counts"].items()]
+                out += ["", f"### Test outcomes: {o['reference']} → {o['compared']}", "", "| Outcome | Count |",
+                        "|---|---|"] + [f"| {k} | {v} |" for k, v in o["counts"].items()]
         if "detection_counts" in m:
-            lines += ["", "### Suspicious-label detection", "", "| | Count |", "|---|---|"]
-            lines += [f"| {k} | {v} |" for k, v in m["detection_counts"].items()]
-        lines += ["", "### Metric definitions", ""]
-        for key in _HEADLINE:
-            v = m.get(key)
-            if isinstance(v, dict) and "definition" in v:
-                lines.append(f"- **{key}**: {v['definition']}. *Population:* {v['population']}.")
-    notes = NOTES.get(rec.evaluation, [])
-    if notes:
-        lines += ["", "### Notes", ""] + [f"- {n}" for n in notes]
-    if rec.lineage:
-        lines += ["", "## Lineage", "", "```json", json.dumps(rec.lineage, indent=2), "```"]
-    lines += ["", "## Reproducibility", "", "```json", json.dumps(rec.reproducibility, indent=2), "```", "",
-              f"Replay with: `mlbreak replay {rec.experiment_id}` · verify with: `mlbreak check {rec.experiment_id}`",
-              ""]
-    return "\n".join(lines)
+            out += ["", "### Suspicious-label detection", "", "| | Count |", "|---|---|"]
+            out += [f"| {k} | {v} |" for k, v in m["detection_counts"].items()]
+        notes = NOTES.get(rec.evaluation, [])
+        if notes:
+            out += ["", "### Notes", ""] + [f"- {n}" for n in notes]
+        out += ["", "### Metric definitions", ""]
+        out += [f"- **{k}**: {m[k]['definition']}. *Population:* {m[k]['population']}." for k in _HEADLINE
+                if isinstance(m.get(k), dict) and "definition" in m[k]]
+    return compose(rec, summary_rows=summary, configuration=config, outcomes=out, verification=verification)

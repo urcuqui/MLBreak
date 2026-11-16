@@ -19,52 +19,34 @@ regression-testing traditional ML models — organised around the
 The first release is a working vertical slice, not a scaffold. Every metric in the UI, CLI and
 reports comes from an experiment that actually ran.
 
-## What the ML01 spam-filter scenario does
+## Quickstart
 
-A second ML01 scenario ([docs/ml01-spam-filter-evasion.md](docs/ml01-spam-filter-evasion.md)), selected in the
-Attack Lab with **ML01 scenario → Spam Filter Evasion**. A TF-IDF + logistic-regression (or naive-Bayes) spam
-filter is trained in-process on the bundled **SMS Spam Collection** (CC BY 4.0, de-duplicated before a seeded
-stratified split). It is attacked with a **DeepWordBug-style** black-box search (swap, substitute, delete or
-insert characters) under explicit constraints: edit distance, altered-character ratio, modified-word ratio,
-protected numbers/URLs and function words, and a per-message query budget enforced by a counting oracle. A label
-change only counts as an evasion if every constraint holds. Defenses are text normalisation (Unicode, leetspeak,
-spell-snap to the training vocabulary) and adversarial data augmentation from training spam, each evaluated by
-replay and by a fresh adaptive attack.
+```bash
+make install && make ui     # Python venv + dependencies, then build the web UI (needs Node 18+)
+make run                    # http://127.0.0.1:8000 — UI and API (API docs at /docs)
+make test && make verify    # test suite, then the security regression gate
+make demo                   # all three labs end to end from the CLI
+docker compose up --build   # alternative: everything in a hardened container on 127.0.0.1:8000
+```
 
-| Seed 7, 93 attackable held-out spam (logistic regression) | Attack success |
-|---|---|
-| Undefended, default constraints | 25/93 = 26.9% |
-| … if phone numbers may be corrupted | 53/93 = 57.0% |
-| Normalisation: replay → adaptive (2 edits/word, 400 queries) | 4/93 → 16/93 |
-| Augmentation: replay → adaptive | 5/91 → 14/91 |
-| Invisible zero-width insertion → Unicode normalisation | 41/93 → 0/93 |
+The web UI lives in `frontend/`: run npm there (`cd frontend && npm install && npm run dev`) or use `make dev`, which
+serves the UI with hot reload on http://127.0.0.1:5173 and needs the API (`make run`) in another terminal.
+Running `npm` in the repository root fails with `ENOENT … package.json`.
 
-The design follows the SpamShieldAI red-team notebook (BERT + TextAttack `DeepWordBugGao2018` on 10 messages),
-re-implemented for traditional ML with tighter constraints. Its historical results are illustrative and are
-not used as thresholds.
+## Laboratories
 
-## What the ML02 lab does
+| Scenario | OWASP | Attack | Defenses (evaluated by replay **and** adaptive attack unless noted) | Regression cases | Guide |
+|---|---|---|---|---|---|
+| **2D Classifier Evasion** | ML01:2023 | FGSM, PGD (white-box), random search (black-box) | adversarial training, confidence rejection | MLB-REG-001…004 | [methodology](docs/methodology.md) |
+| **Spam Filter Evasion** | ML01:2023 | DeepWordBug-style character edits (black-box), under text-preservation constraints | text normalisation, adversarial data augmentation | MLB-REG-009…013 | [ml01-spam-filter-evasion](docs/ml01-spam-filter-evasion.md) |
+| **Label-Flipping Poisoning** | ML02:2023 | random / targeted label flipping + retraining | kNN label sanitisation (replay only — no adaptive poisoner) | MLB-REG-005…008 | [ml02-data-poisoning](docs/ml02-data-poisoning.md) |
 
-The same bundled dataset and model configurations, attacked through **training labels** instead of test
-inputs ([docs/ml02-data-poisoning.md](docs/ml02-data-poisoning.md)):
+Every lab follows the same four steps in the UI — **Baseline → Attack → Defend → Evidence & replay** — with the
+same actions (*Run baseline*, *Replay against defense*, *Run adaptive attack*, *Verify*, *Replay*) and the same
+seven-section evidence report ([docs/evidence.md](docs/evidence.md)). Open them from **Attack Lab** (ML01 has a
+scenario selector) or from the **OWASP ML Top 10** page.
 
-1. **Clean training**: the reference model, trained on true labels.
-2. **Poison and retrain**: flip the labels of a bounded fraction of the training set, chosen at random,
-   from one target class, or from the target-class rows nearest the clean boundary (seeded and
-   budget-verified). The model is then actually retrained. The UI shows the clean and poisoned decision
-   boundaries, the flipped rows, and the test samples the poisoning broke.
-3. **Defensive replay**: replay the *exact* poisoned training set through kNN label sanitisation (relabel or
-   remove), retrain, and report detection precision/recall, false positives, recovery, and the defense's
-   cost on clean data.
-
-| Poisoning (MLP, seed 7) | Undefended ASR | kNN detects | Defended ASR |
-|---|---|---|---|
-| random 20% | 3.4% (5/145) | 61/70 | 1.4% |
-| targeted class 1, 10%, random rows | 5.6% (4/71) | 31/35 | 2.8% |
-| targeted class 1, 10%, **boundary rows** | **23.9%** (17/71) | **0/35** | 22.5% |
-| targeted class 1, 20%, random rows | **47.9%** (34/71) | 28/70 | **52.1%** (worse) |
-
-## What the ML01 lab does
+### ML01 · 2D Classifier Evasion
 
 A classifier (`MLPClassifier`, tanh 16×16, or logistic regression for contrast) is trained on a
 seeded `make_moons` dataset. In the lab you can:
@@ -114,6 +96,51 @@ the CI reference, Linux x86_64 / OpenBLAS Haswell). In every one of them, advers
 adaptive success significantly on the same samples (McNemar p ≤ 0.004, −8.3 to −14.6 pp). See
 [docs/regression-analysis-mlb-reg-002.md](docs/regression-analysis-mlb-reg-002.md) and
 [docs/reproducibility.md](docs/reproducibility.md#numerical-environment-and-dependency-strategy).
+
+### ML01 · Spam Filter Evasion
+
+A second ML01 scenario ([docs/ml01-spam-filter-evasion.md](docs/ml01-spam-filter-evasion.md)), selected in the
+Attack Lab with **ML01 scenario → Spam Filter Evasion**. A TF-IDF + logistic-regression (or naive-Bayes) spam
+filter is trained in-process on the bundled **SMS Spam Collection** (CC BY 4.0, de-duplicated before a seeded
+stratified split). It is attacked with a **DeepWordBug-style** black-box search (swap, substitute, delete or
+insert characters) under explicit constraints: edit distance, altered-character ratio, modified-word ratio,
+protected numbers/URLs and function words, and a per-message query budget enforced by a counting oracle. A label
+change only counts as an evasion if every constraint holds. Defenses are text normalisation (Unicode, leetspeak,
+spell-snap to the training vocabulary) and adversarial data augmentation from training spam, each evaluated by
+replay and by a fresh adaptive attack.
+
+| Seed 7, 93 attackable held-out spam (logistic regression) | Attack success |
+|---|---|
+| Undefended, default constraints | 25/93 = 26.9% |
+| … if phone numbers may be corrupted | 53/93 = 57.0% |
+| Normalisation: replay → adaptive (2 edits/word, 400 queries) | 4/93 → 16/93 |
+| Augmentation: replay → adaptive | 5/91 → 14/91 |
+| Invisible zero-width insertion → Unicode normalisation | 41/93 → 0/93 |
+
+The design follows the SpamShieldAI red-team notebook (BERT + TextAttack `DeepWordBugGao2018` on 10 messages),
+re-implemented for traditional ML with tighter constraints. Its historical results are illustrative and are
+not used as thresholds.
+
+### ML02 · Label-Flipping Poisoning
+
+The same bundled dataset and model configurations, attacked through **training labels** instead of test
+inputs ([docs/ml02-data-poisoning.md](docs/ml02-data-poisoning.md)):
+
+1. **Baseline**: the reference model, trained on the true (clean) labels.
+2. **Poison and retrain**: flip the labels of a bounded fraction of the training set, chosen at random,
+   from one target class, or from the target-class rows nearest the clean boundary (seeded and
+   budget-verified). The model is then actually retrained. The UI shows the clean and poisoned decision
+   boundaries, the flipped rows, and the test samples the poisoning broke.
+3. **Defensive replay**: replay the *exact* poisoned training set through kNN label sanitisation (relabel or
+   remove), retrain, and report detection precision/recall, false positives, recovery, and the defense's
+   cost on clean data.
+
+| Poisoning (MLP, seed 7) | Undefended ASR | kNN detects | Defended ASR |
+|---|---|---|---|
+| random 20% | 3.4% (5/145) | 61/70 | 1.4% |
+| targeted class 1, 10%, random rows | 5.6% (4/71) | 31/35 | 2.8% |
+| targeted class 1, 10%, **boundary rows** | **23.9%** (17/71) | **0/35** | 22.5% |
+| targeted class 1, 20%, random rows | **47.9%** (34/71) | 28/70 | **52.1%** (worse) |
 
 ## Architecture
 
@@ -194,7 +221,7 @@ UI development with hot reload: `make run` in one shell, `make dev` in another (
 ```bash
 make test           # pytest: unit + integration + API + regression + static security checks
 make verify         # security regression gate, non-zero exit on failure
-make demo           # ML01: Baseline → Attack → Defend (replay) → Adaptive → Black-box → exact replay
+make demo           # all labs: ML01 2-D (baseline → attack → replay/adaptive → black-box → exact replay), ML01 spam, ML02
 PYTHONPATH=src .venv/bin/python -m mlbreak demo --lab ml01-spam   # ML01 spam filter: attack → replay/adaptive per defense
 PYTHONPATH=src .venv/bin/python -m mlbreak demo --lab ml02   # ML02: clean → poison → defensive replay → replay
 PYTHONPATH=src .venv/bin/python -m mlbreak demo --lab all
@@ -239,6 +266,16 @@ Evidence is written to `var/experiments/` (override with `MLBREAK_DATA_DIR`).
   path traversal.
 * A CSP (`default-src 'self'`) and anti-framing headers are set on the UI.
 
+## Data and licensing
+
+* **Datasets:** `moons-v1` is generated at runtime; the **SMS Spam Collection v.1** (Almeida & Gómez Hidalgo,
+  UCI, DOI 10.24432/C5CC84) is bundled under **CC BY 4.0** with its attribution
+  ([docs/datasets.md](docs/datasets.md)). Nothing is downloaded at runtime.
+* **Software license: not yet chosen.** There is no `LICENSE` file, so the code is under default copyright and
+  others have no right to reuse it. The options and their consequences are laid out in
+  [docs/licensing.md](docs/licensing.md); **a maintainer decision is required** before the project is presented
+  as open source. All dependencies are permissive (BSD/MIT/Apache-2.0) and compatible with every option listed.
+
 ## Documentation
 
 * [ML01 spam-filter evasion: reference analysis, threat model, constraints, defenses, limitations](docs/ml01-spam-filter-evasion.md)
@@ -250,6 +287,10 @@ Evidence is written to `var/experiments/` (override with `MLBREAK_DATA_DIR`).
 * [Reproducibility](docs/reproducibility.md): integrity vs authenticity, dependency locks, numerical environments
 * [MLB-REG-002 root-cause analysis](docs/regression-analysis-mlb-reg-002.md)
 * [Responsible use](docs/responsible-use.md)
+* [Evidence across laboratories: report structure, verify, replay](docs/evidence.md)
+* [HTTP API: error contract, endpoints, examples](docs/api.md)
+* [Datasets and attribution](docs/datasets.md)
+* [Licensing — maintainer decision required](docs/licensing.md)
 
 ## Troubleshooting
 
@@ -258,6 +299,14 @@ Documents can mark files inside `.venv` as hidden, and Python ≥ 3.12 skips hid
 the editable install disappears. The Makefile sets `PYTHONPATH=src` to avoid this. Alternatively,
 keep the repository outside a synced folder, or run `chflags nohidden .venv/lib/python3.*/site-packages/*.pth`.
 
+**`npm error enoent Could not read package.json`.** npm was run in the repository root. The UI is in `frontend/`:
+`cd frontend && npm install && npm run dev`, or `make dev` from the root.
+
+**HTTP 429 in the browser console.** The server runs at most two experiments (or boundary grids) at a time and
+refuses extra requests *before* doing any work; the UI queues gated requests and retries, so this is harmless.
+
 ## License
 
-No license has been chosen yet. Add one before publishing the repository as open source.
+**No license has been chosen yet — maintainer decision required.** See [docs/licensing.md](docs/licensing.md)
+for the options (MIT, Apache-2.0, BSD-3-Clause, MPL-2.0, GPL-3.0, AGPL-3.0) and the follow-up checklist. The bundled
+SMS Spam Collection remains under CC BY 4.0 regardless of the code license.
