@@ -100,3 +100,22 @@ def auxiliary_model(seed: int) -> LinearModel:
     w.setflags(write=False)
     return LinearModel("aux-logreg", "attacker auxiliary model", PUBLIC_FEATURES, w, b, seed, len(ds.aux.s),
                        "auxiliary population: public features → private attribute (no victim outputs)")
+
+
+@lru_cache(maxsize=32)
+def auxiliary_model_sized(seed: int, n: int) -> LinearModel | None:
+    """A WEAKER auxiliary attacker for sensitivity studies: fitted on the first ``n`` auxiliary rows only.
+
+    ``n = 0`` (no auxiliary data) returns None: the attacker then has no prior (P(s=1) = 0.5 for everyone). A sample
+    containing a single class also returns None — logistic regression cannot be fitted on it.
+    """
+    if n <= 0:
+        return None
+    ds = load_inversion_dataset(seed)
+    X, s = ds.aux.X[:n], ds.aux.s[:n]
+    if len(set(s.tolist())) < 2:
+        return None
+    w, b = _fit(X, s, seed)
+    w.setflags(write=False)
+    return LinearModel(f"aux-logreg-n{n}", "attacker auxiliary model (reduced)", PUBLIC_FEATURES, w, b, seed, n,
+                       f"first {n} auxiliary rows: public features → private attribute")

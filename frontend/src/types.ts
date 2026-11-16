@@ -331,6 +331,6 @@ export interface InversionRecord {
 }
 export interface InversionTargetsView {
   model_id: string; seed: number; output_policy: OutputPolicy & { releases: string };
-  public_features: string[]; private_attribute: { name: string; domain: number[]; value: "hidden" };
+  public_features: string[]; hidden_attribute: { name: string; domain: number[]; value: "hidden" };
   targets: { target_index: number; public_features: number[]; observed_output: number }[];
 }

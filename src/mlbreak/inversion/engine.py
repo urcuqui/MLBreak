@@ -34,11 +34,12 @@ from .integrity import results_fingerprint
 from .metrics import derive_inversion_metrics
 from .models import auxiliary_model, public_only_reference, victim_model
 from .schemas import (SCENARIO_ID, GroundTruth, InversionAttackConfig, InversionAttackRequest,
-                      InversionBaselineRequest, InversionDefendRequest, InversionQueryRequest, InversionRecord,
+                      InversionBaselineRequest, InversionDefendRequest, InversionRecord,
                       InversionTargetsRequest, ServiceRow, TargetResult, TargetSelection)
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..experiments import ExperimentEngine
+    from .sessions import TargetsPreview
 
 FULL = {"kind": "full_probability"}
 
@@ -73,31 +74,59 @@ class InversionLab:
         parent = self._load_parent(req.parent_experiment_id)
         return self._execute("defend", req, lambda r, d: self._defend(r, parent, d), replay_of)
 
-    def targets_view(self, req: InversionTargetsRequest) -> dict[str, Any]:
-        """ATTACKER-FACING view of the selected targets: public features and the service's released output for
-        the real record. Contains no private attribute, label, score before the policy or model parameter."""
-        def work(deadline: float) -> dict[str, Any]:
+    def targets_view(self, req: InversionTargetsRequest) -> "TargetsPreview":
+        """EVALUATOR-facing preview of the selected targets: public features and the service's released output for
+        the real record under a policy the CALLER chooses. Contains no private attribute, label, pre-policy score or
+        model parameter, but it is not budgeted or policy-bound, so attackers use sessions instead (see sessions.py)."""
+        from .sessions import AttackerTargetView, HiddenAttribute, TargetsPreview
+
+        def work(deadline: float) -> TargetsPreview:
             ds = load_inversion_dataset(req.seed)
             service = PredictionService(victim_model(req.model_id, req.seed), req.output_policy.model_dump())
             idx = select_targets(req.targets, req.seed, len(ds.s_eval))
             observed = service.respond(ds.X_eval[idx], ds.s_eval[idx])
             _check_deadline(deadline)
-            return {"model_id": req.model_id, "seed": req.seed,
-                    "output_policy": describe_policy(req.output_policy.model_dump()),
-                    "public_features": list(ds.describe()["public_features"]),
-                    "private_attribute": {"name": ds.describe()["private_attribute"], "domain": [0, 1],
-                                          "value": "hidden"},
-                    "targets": [{"target_index": i, "public_features": ds.X_eval[i].tolist(),
-                                 "observed_output": float(o)} for i, o in zip(idx, observed)]}
+            return TargetsPreview(
+                model_id=req.model_id, seed=req.seed, output_policy=describe_policy(req.output_policy.model_dump()),
+                public_features=list(ds.describe()["public_features"]),
+                hidden_attribute=HiddenAttribute(name=ds.describe()["private_attribute"], domain=[0, 1]),
+                targets=[AttackerTargetView(target_index=i, public_features=ds.X_eval[i].tolist(),
+                                            observed_output=float(o)) for i, o in zip(idx, observed)])
         return self.engine.gated(work)
 
-    def query(self, req: InversionQueryRequest) -> dict[str, Any]:
-        """One black-box query: the service evaluates exactly the record supplied (nothing is looked up)."""
-        def work(deadline: float) -> dict[str, Any]:
-            service = PredictionService(victim_model(req.model_id, req.seed), req.output_policy.model_dump())
-            out = float(service.respond(np.array([req.public_features]), np.array([req.private_attribute]))[0])
-            return {"released": out, "output_policy": describe_policy(req.output_policy.model_dump())}
+    # ---------------------------------------------------------- sensitivity study (evaluator-facing)
+    def sensitivity(self, req):
+        """Run, store and return a controlled sensitivity study (:mod:`.sensitivity`)."""
+        from .sensitivity import SensitivityStore, run_sensitivity
+
+        def work(deadline: float):
+            rep = run_sensitivity(req, deadline)
+            SensitivityStore(self.store.root).save(rep)
+            return rep
         return self.engine.gated(work)
+
+    def load_sensitivity(self, report_id: str):
+        from .sensitivity import SensitivityStore
+        return SensitivityStore(self.store.root).load(report_id)
+
+    def verify_sensitivity(self, report_id: str) -> dict[str, Any]:
+        from .sensitivity import verify_report
+        return verify_report(self.load_sensitivity(report_id))
+
+    def replay_sensitivity(self, report_id: str) -> dict[str, Any]:
+        """Re-run a stored study from its request (refused if it fails verification) and compare fingerprints."""
+        from ..experiments import EvidenceIntegrityError
+        from .sensitivity import SensitivityRequest
+        original = self.load_sensitivity(report_id)
+        check = self.verify_sensitivity(report_id)
+        if not check["ok"]:
+            raise EvidenceIntegrityError(report_id, check)
+        new = self.sensitivity(SensitivityRequest.model_validate(original.request))
+        o, n = original.reproducibility, new.reproducibility
+        checks = [{"check": k, "original": o.get(k), "replay": n.get(k), "match": o.get(k) == n.get(k)}
+                  for k in ("config_sha256", "results_sha256")]
+        return {"original_report_id": report_id, "replay_report_id": new.report_id,
+                "identical": all(c["match"] for c in checks), "checks": checks}
 
     def replay(self, original: InversionRecord) -> dict[str, Any]:
         from ..experiments import InvalidExperiment, environment_differences, environment_note

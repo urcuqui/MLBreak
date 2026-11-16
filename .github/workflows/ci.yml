@@ -52,7 +52,7 @@ jobs:
         run: >
           docker run -d --name mlbreak -p 127.0.0.1:8000:8000 --read-only --tmpfs /tmp --tmpfs /data:uid=10001
           --cap-drop ALL --security-opt no-new-privileges:true mlbreak:ci
-      - name: Smoke test (health, UI, bundled spam model, ML03 attacker view + inversion experiment)
+      - name: Smoke test (health, UI, bundled spam model, ML03 inversion experiment + budgeted attack session)
         run: |
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/api/health && break; sleep 1; done
           curl -sf -o /dev/null http://127.0.0.1:8000/lab/ml01/spam/baseline
@@ -64,6 +64,15 @@ jobs:
           ID=$(curl -sf -X POST -H 'Content-Type: application/json' -d '{"targets": {"max_targets": 20}}' \
             http://127.0.0.1:8000/api/experiments/inversion/attack | python3 -c 'import json,sys; print(json.load(sys.stdin)["experiment_id"])')
           curl -sf http://127.0.0.1:8000/api/experiments/$ID/verify | grep -q '"ok":true'
+          SID=$(curl -sf -X POST -H 'Content-Type: application/json' \
+            -d '{"targets": {"max_targets": 2}, "query_budget_per_target": 1}' http://127.0.0.1:8000/api/inversion/sessions \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["session_id"])')
+          T=$(curl -sf http://127.0.0.1:8000/api/inversion/sessions/$SID | python3 -c 'import json,sys; print(json.load(sys.stdin)["targets"][0]["target_index"])')
+          curl -sf -X POST -H 'Content-Type: application/json' -d "{\"target_index\": $T, \"candidate\": 1}" \
+            http://127.0.0.1:8000/api/inversion/sessions/$SID/query | grep -q '"query_number":1'
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+            -d "{\"target_index\": $T, \"candidate\": 0}" http://127.0.0.1:8000/api/inversion/sessions/$SID/query)
+          test "$CODE" = 403   # per-target budget of 1 exhausted
       - name: Container logs
         if: ${{ always() }}
         run: docker logs mlbreak || true

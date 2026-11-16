@@ -165,7 +165,10 @@ confidential binary attribute as inputs ([docs/ml03-model-inversion.md](docs/ml0
 | label only | 168/200 | +15.0 pts, claimed (p = 9e-10) | 0.753 |
 | negative control (model ignores the attribute) | 138/200 | 0, **not** claimed | 0.798 |
 
-High accuracy alone is never reported as leakage; output restriction is not a formal privacy guarantee.
+High accuracy alone is never reported as leakage; output restriction is not a formal privacy guarantee. Attackers query over HTTP only through evaluator-issued, budgeted
+**attack sessions** (`ml03-attacker` endpoints, which return no ground truth). Setting `MLBREAK_EVALUATOR_TOKEN` puts
+every other endpoint behind a bearer token. A sensitivity study (`mlbreak invert sensitivity`) tests each attacker
+assumption against the auxiliary-only baseline on identical targets.
 
 ## Architecture
 

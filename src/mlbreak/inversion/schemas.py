@@ -109,23 +109,13 @@ class InversionDefendRequest(Strict):
 
 
 class InversionTargetsRequest(Strict):
-    """Attacker-facing view of the evaluation targets (public features + observed output only)."""
+    """EVALUATOR-facing preview of the evaluation targets (public features + observed output only). Attackers use
+    budgeted sessions (:mod:`.sessions`), whose policy and scope are fixed by the evaluator."""
 
     model_id: ModelId = "logreg"
     seed: int = Field(7, ge=0, le=LIMITS.max_inversion_seed)
     output_policy: OutputPolicyConfig = Field(default_factory=FullProbability)
     targets: TargetSelection = Field(default_factory=lambda: TargetSelection(max_targets=50))
-
-
-class InversionQueryRequest(Strict):
-    """One query to the black-box prediction service: a full (possibly crafted) record in, the released output
-    out. Nothing is looked up — the service evaluates exactly the record it is given."""
-
-    model_id: ModelId = "logreg"
-    seed: int = Field(7, ge=0, le=LIMITS.max_inversion_seed)
-    output_policy: OutputPolicyConfig = Field(default_factory=FullProbability)
-    public_features: list[Annotated[float, Field(ge=-10, le=10)]] = Field(min_length=4, max_length=4)
-    private_attribute: Literal[0, 1]
 
 
 # --------------------------------------------------------------------------

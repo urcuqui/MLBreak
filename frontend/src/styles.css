@@ -154,3 +154,6 @@ textarea { background: var(--surface-2); color: var(--text); border: 1px solid v
 .trace-steps > li > .row { margin-bottom: 4px; }
 .hidden-attr { color: var(--muted); font-style: italic; white-space: nowrap; }
 fieldset.form { border: 0; padding: 0; margin: 0; min-width: 0; }
+.evaluator-access { margin-bottom: 10px; }
+.evaluator-access form { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.evaluator-access label { display: flex; flex-direction: column; gap: 4px; }

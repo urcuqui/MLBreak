@@ -279,7 +279,7 @@ function TargetsPreview({ ctx }: { ctx: Ctx }) {
       <div className="table-wrap scroll-y" tabIndex={0} role="region" aria-label="Attacker's view of the first targets">
         <table className="table small">
           <caption className="sr-only">Public features, hidden private attribute and observed output per target</caption>
-          <thead><tr><th>target</th>{view.public_features.map((f) => <th key={f}>{f}</th>)}<th>{view.private_attribute.name}</th><th>observed output</th></tr></thead>
+          <thead><tr><th>target</th>{view.public_features.map((f) => <th key={f}>{f}</th>)}<th>{view.hidden_attribute.name}</th><th>observed output</th></tr></thead>
           <tbody>{view.targets.map((t) => (
             <tr key={t.target_index}><td>{t.target_index}</td>
               {t.public_features.map((v, j) => <td key={j} className="mono">{v.toFixed(3)}</td>)}
@@ -287,7 +287,7 @@ function TargetsPreview({ ctx }: { ctx: Ctx }) {
               <td className="mono">{fmtOut(t.observed_output, view.output_policy)}</td></tr>))}</tbody>
         </table>
       </div>
-      <p className="muted small mt">Served by the attacker-facing endpoint: it never returns the private attribute, the label or
+      <p className="muted small mt">Evaluator preview (attackers use budgeted sessions instead): it never returns the private attribute, the label or
         the pre-policy score. The attribute values stay hidden until the evaluation engine scores a finished experiment.</p>
     </>
   );

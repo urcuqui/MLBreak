@@ -100,21 +100,19 @@ def test_inference_does_not_depend_on_hidden_truth():
     assert run() == first                                                # … the attacker's output does not
 
 
-def test_attacker_facing_targets_endpoint_hides_ground_truth(client):
+def test_evaluator_target_preview_hides_ground_truth_and_unrestricted_query_is_gone(client):
     r = client.post("/api/inversion/targets", json={"targets": {"max_targets": 5}, "output_policy": {"kind": "label_only"}})
     assert r.status_code == 200
     body = r.json()
-    assert body["private_attribute"]["value"] == "hidden"
+    assert body["hidden_attribute"]["value"] == "hidden"
     for t in body["targets"]:
         assert set(t) == {"target_index", "public_features", "observed_output"}
         assert t["observed_output"] in (0.0, 1.0)
     text = json.dumps(body)
     assert "p_full" not in text and "y_true" not in text and "ground_truth" not in text
-    q = client.post("/api/inversion/query", json={"public_features": body["targets"][0]["public_features"],
-                                                  "private_attribute": 1})
-    assert q.status_code == 200 and 0 <= q.json()["released"] <= 1
-    assert client.post("/api/inversion/query", json={"public_features": [0, 0, 0, 0], "private_attribute": 1,
-                                                     "target_index": 3}).status_code == 422  # no lookup by id
+    # the former unrestricted model-query endpoint no longer exists: attackers query through budgeted sessions
+    q = client.post("/api/inversion/query", json={"public_features": [0, 0, 0, 0], "private_attribute": 1})
+    assert q.status_code in (404, 405)
 
 
 # ------------------------------------------------------------------ attack semantics
@@ -315,7 +313,8 @@ def test_frontend_calls_existing_routes_and_types_match_records(client):
                  "/api/experiments/inversion/defend", "/api/inversion/targets"):
         assert path in api, path
     routes = {r.path for r in client.app.routes}
-    assert {"/api/experiments/inversion/baseline", "/api/inversion/targets", "/api/inversion/query"} <= routes
+    assert {"/api/experiments/inversion/baseline", "/api/inversion/targets", "/api/inversion/sessions"} <= routes
+    assert "/api/inversion/query" not in routes
     types = (PROJECT_ROOT / "frontend" / "src" / "types.ts").read_text()
     from mlbreak.inversion.schemas import InversionRecord, TargetResult
     for model, iface in ((InversionRecord, "InversionRecord"), (TargetResult, "InversionTarget"),

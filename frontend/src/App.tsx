@@ -1,4 +1,6 @@
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { useState } from "react";
+import { evaluatorToken, setEvaluatorToken } from "./api";
 import { labPathOf, lastLab } from "./components/LabSwitcher";
 import { Dashboard } from "./pages/Dashboard";
 import { Evidence } from "./pages/Evidence";
@@ -23,6 +25,23 @@ function nav(lab: string) {
   ];
 }
 
+/** Only needed when the server runs in evaluator-token mode (MLBREAK_EVALUATOR_TOKEN); empty by default. */
+function EvaluatorAccess() {
+  const [value, setValue] = useState(evaluatorToken());
+  const [saved, setSaved] = useState(!!evaluatorToken());
+  return (
+    <details className="evaluator-access">
+      <summary>Evaluator access{saved ? " · token set" : ""}</summary>
+      <form onSubmit={(e) => { e.preventDefault(); setEvaluatorToken(value.trim()); setSaved(!!value.trim()); window.location.reload(); }}>
+        <label className="small">Evaluator token (this tab only)
+          <input type="password" autoComplete="off" value={value} onChange={(e) => setValue(e.target.value)} />
+        </label>
+        <button className="btn small" type="submit">Save</button>
+      </form>
+    </details>
+  );
+}
+
 export function App() {
   // The lab in the URL wins (the switcher stores it during the same render); otherwise the last-used lab.
   const { pathname } = useLocation();
@@ -36,7 +55,10 @@ export function App() {
             <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => (isActive ? "nav active" : "nav")}>{n.label}</NavLink>
           ))}
         </nav>
-        <div className="sidebar-foot small muted">Local-first · no credentials · no uploads<br />Educational use only</div>
+        <div className="sidebar-foot small muted">
+          <EvaluatorAccess />
+          Local-first · no uploads<br />Educational use only
+        </div>
       </aside>
       <main className="main">
         <Routes>

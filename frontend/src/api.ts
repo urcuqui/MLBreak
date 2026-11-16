@@ -15,13 +15,29 @@ export class ApiError extends Error {
 // requests at once (and a cold model fit can hold a slot for a few seconds), so 429s are retried with backoff.
 const RETRY_429 = [300, 600, 1000, 1500, 2500, 4000];
 
+// Evaluator-token mode (server started with MLBREAK_EVALUATOR_TOKEN): evaluator-facing endpoints need a bearer token.
+// The token is kept in sessionStorage for this tab only and sent with API calls; download links cannot carry it.
+const TOKEN_KEY = "mlbreak.evaluatorToken";
+export function evaluatorToken(): string {
+  try { return sessionStorage.getItem(TOKEN_KEY) ?? ""; } catch { return ""; }
+}
+export function setEvaluatorToken(t: string) {
+  try { if (t) sessionStorage.setItem(TOKEN_KEY, t); else sessionStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
+}
+function authHeaders(): Record<string, string> {
+  const t = evaluatorToken();
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  let res = await fetch(path, { ...init, headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) } });
+  const headers = { "Content-Type": "application/json", ...authHeaders(), ...(init?.headers ?? {}) };
+  let res = await fetch(path, { ...init, headers });
   for (const wait of RETRY_429) {
     if (res.status !== 429) break;
     await new Promise((r) => setTimeout(r, wait));
-    res = await fetch(path, { ...init, headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) } });
+    res = await fetch(path, { ...init, headers });
   }
+  if (res.status === 401) throw new ApiError(401, "Evaluator token required (server runs in evaluator-token mode): set it under 'Evaluator access' in the sidebar.");
   if (!res.ok) {
     let msg = res.statusText;
     try {
@@ -71,7 +87,7 @@ export const api = {
   experiment: (id: string) => req<ExperimentRecord>(`/api/experiments/${encodeURIComponent(id)}`),
   replay: (id: string) => post<ReplayResult>(`/api/experiments/${encodeURIComponent(id)}/replay`, {}),
   report: async (id: string) => {
-    const r = await fetch(`/api/experiments/${encodeURIComponent(id)}/report.md`);
+    const r = await fetch(`/api/experiments/${encodeURIComponent(id)}/report.md`, { headers: authHeaders() });
     if (!r.ok) throw new ApiError(r.status, r.statusText);
     return r.text();
   },

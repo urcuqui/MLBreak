@@ -328,6 +328,20 @@ def _policy(args):
 
 def cmd_invert(args) -> int:
     lab = _engine().inversion
+    if args.invert_cmd == "sensitivity":
+        from .inversion.sensitivity import FACTORS, SensitivityRequest, SensitivityStore, render_markdown
+        if args.replay:
+            r = lab.replay_sensitivity(args.replay)
+            print(json.dumps(r, indent=2))
+            return 0 if r["identical"] else 1
+        rep = lab.sensitivity(SensitivityRequest(model_id=args.model, seed=args.seed,
+                                                 targets=TargetSelection(max_targets=args.targets),
+                                                 factors=args.factors.split(",") if args.factors else list(FACTORS)))
+        print(render_markdown(rep))
+        check = lab.verify_sensitivity(rep.report_id)
+        print(f"Report {rep.report_id}: {SensitivityStore(lab.store.root).path(rep.report_id)} · integrity "
+              f"{'ok' if check['ok'] else 'FAILED'}")
+        return 0 if check["ok"] else 1
     targets = TargetSelection(max_targets=args.targets) if hasattr(args, "targets") else None
     if args.invert_cmd == "baseline":
         rec = lab.run_baseline(InversionBaselineRequest(model_id=args.model, seed=args.seed, targets=targets))
@@ -360,7 +374,19 @@ def _demo_ml03(eng) -> tuple[list, bool]:
     ok = not neg.metrics["leakage_p_value"]["leakage_claimed"]
     r = eng.replay(atk.experiment_id)
     print(f"\nML03-6) Exact replay of {atk.experiment_id}: identical={r['identical']}")
-    return recs, ok and r["identical"]
+    from .inversion.sensitivity import SensitivityRequest
+    print("\nML03-7) Sensitivity study (every setting vs the auxiliary-only attacker on the same targets)")
+    for model in ("logreg", "logreg-public-only"):
+        rep = lab.sensitivity(SensitivityRequest(model_id=model))
+        adv = [s.metrics["inference_advantage"]["value"] for s in rep.results]
+        claims = sum(s.metrics["leakage_p_value"]["leakage_claimed"] for s in rep.results)
+        verified = lab.verify_sensitivity(rep.report_id)["ok"]
+        print(f"  {rep.report_id}  model={model} settings={len(rep.results)} leakage claimed in {claims} · "
+              f"advantage range {min(adv):+.3f} … {max(adv):+.3f} · integrity {'ok' if verified else 'FAILED'}")
+        ok &= verified and (model == "logreg" or claims == 0)
+    rr = lab.replay_sensitivity(rep.report_id)
+    print(f"  replay of {rep.report_id}: identical={rr['identical']}")
+    return recs, ok and r["identical"] and rr["identical"]
 
 
 def cmd_demo(args) -> int:
@@ -552,6 +578,13 @@ def build_parser() -> argparse.ArgumentParser:
             ins.add_argument("--queries", type=int, default=2, help="query budget per target")
             ins.add_argument("--tie-policy", default="auxiliary_prior", choices=["auxiliary_prior", "abstain"])
         ins.set_defaults(fn=cmd_invert)
+    ins = isub.add_parser("sensitivity", help="controlled sensitivity study (every setting vs the auxiliary baseline)")
+    ins.add_argument("--model", default="logreg", choices=["logreg", "logreg-public-only"])
+    ins.add_argument("--seed", type=int, default=7)
+    ins.add_argument("--targets", type=int, default=200)
+    ins.add_argument("--factors", default="", help="comma-separated subset (default: all)")
+    ins.add_argument("--replay", metavar="REPORT_ID", help="re-run a stored study and compare its fingerprints")
+    ins.set_defaults(fn=cmd_invert)
     ins = isub.add_parser("defend", help="NEW (adaptive) inversion against a restrictive output policy")
     ins.add_argument("parent")
     ins.add_argument("--policy", default="label_only", choices=["label_only", "quantized_probability"])

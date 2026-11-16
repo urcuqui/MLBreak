@@ -13,8 +13,10 @@ runs; routes are grouped by tag. This page summarises the contract and gives exa
 
 | Status | Meaning |
 |---|---|
-| 404 | unknown experiment id |
-| 409 | the stored evidence **failed its integrity check**; nothing was executed (body: `integrity` report) |
+| 401 | evaluator-token mode (`MLBREAK_EVALUATOR_TOKEN`): an evaluator endpoint was called without `Authorization: Bearer <token>` |
+| 403 | ML03 session refused: `query_budget_exhausted`, `target_out_of_scope`, `session_closed`, `already_submitted`, `invalid_submission`, `session_limit_reached` |
+| 404 | unknown experiment id, sensitivity report id or session id |
+| 409 | the stored evidence **failed its integrity check**; nothing was executed (body: `integrity` report); or an ML03 session was scored before submission |
 | 422 | invalid request, or a valid request that cannot run (e.g. an incompatible parent experiment) |
 | 429 | concurrency gate full; nothing was executed — retry (the web UI queues and retries automatically) |
 | 504 | wall-clock limit exceeded for non-experiment work; experiments record `status: failed` instead |
@@ -27,7 +29,8 @@ runs; routes are grouped by tag. This page summarises the contract and gives exa
 | `ml01-2d` | `POST /api/experiments/baseline`, `/attack`, `/defend`; `POST /api/boundary`; `GET /api/scenarios/ml01-moons-evasion/dataset` |
 | `ml01-spam` | `POST /api/experiments/text/baseline`, `/text/attack`, `/text/defend`; `POST /api/text/classify`; `GET /api/text/messages` |
 | `ml02` | `POST /api/experiments/poisoning/baseline`, `/poisoning/attack`, `/poisoning/defend`; `GET /api/experiments/{id}/boundary` |
-| `ml03` | `POST /api/experiments/inversion/baseline`, `/inversion/attack`, `/inversion/defend`; attacker-facing `POST /api/inversion/targets` (public features + observed output, never the attribute) and `POST /api/inversion/query` (one black-box query with a supplied record) |
+| `ml03` (evaluator) | `POST /api/experiments/inversion/baseline`, `/inversion/attack`, `/inversion/defend`; `POST /api/inversion/targets` (unbudgeted preview); `POST /api/inversion/sessions` (issue a session); `GET /api/inversion/sessions/{id}/score`; `POST /api/inversion/sensitivity`, `GET /api/inversion/sensitivity/{id}`, `/verify` |
+| `ml03-attacker` | `GET /api/inversion/sessions/{id}`; `POST /api/inversion/sessions/{id}/query` (`{target_index, candidate}`, counted); `POST /api/inversion/sessions/{id}/submit` (once) |
 | `evidence` | `GET /api/experiments`, `/api/experiments/{id}`, `/{id}/verify`, `/{id}/evidence.json`, `/{id}/report.md`, `/{id}/samples.csv`; `POST /api/experiments/{id}/replay` |
 | `regression` | `GET /api/regression/cases`, `/api/regression/latest`; `POST /api/regression/run` |
 | `ui` | `GET /api/dashboard` |

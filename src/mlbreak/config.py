@@ -49,6 +49,8 @@ class Limits:
     max_inversion_targets: int = 400       # evaluation records attacked per experiment (= evaluation split size)
     max_inversion_query_budget: int = 16   # victim queries per attacked record
     max_inversion_seed: int = 100_000      # dataset/model seed (bounded, see docs/ml03-model-inversion.md)
+    max_session_queries: int = 800         # total victim queries per interactive attack session
+    max_inversion_sessions: int = 500      # attack sessions per evidence root (no reset; evaluator clears the store)
     # Wall-clock limit for a whole security regression suite (cases not started in time FAIL).
     max_regression_seconds: float = 600.0
 

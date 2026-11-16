@@ -8,7 +8,10 @@ strict, bounded Pydantic model.
 
 from __future__ import annotations
 
+import hmac
 import json
+import os
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -25,7 +28,11 @@ from .models import MODELS
 from .owasp import CATEGORIES, TAXONOMY_NAME, TAXONOMY_URL, TAXONOMY_VERSION
 from .regression import load_cases, run_suite
 from .inversion.schemas import (InversionAttackRequest, InversionBaselineRequest, InversionDefendRequest,
-                                InversionQueryRequest, InversionTargetsRequest)
+                                InversionTargetsRequest)
+from .inversion.sensitivity import SensitivityReport, SensitivityRequest
+from .inversion.sessions import (AttackerQueryResponse, AttackerSessionView, AttackerSubmitReceipt, SessionCreateRequest,
+                                 SessionNotFound, SessionNotSubmitted, SessionQueryRequest, SessionRefused, SessionScore,
+                                 SessionStore, SessionSubmitRequest, TargetsPreview)
 from .poisoning.schemas import PoisonAttackRequest, PoisonBaselineRequest, PoisonDefendRequest
 from .text.schemas import (ModelId as TextModelId, TextAttackRequest, TextBaselineRequest, TextClassifyRequest,
                            TextDefendRequest)
@@ -45,13 +52,18 @@ Every request body is a strict schema (unknown fields are rejected). Error contr
 
 | Status | Meaning |
 |---|---|
-| 404 | unknown experiment id (ids must match `MLB-EXP-<12 hex>`) |
-| 409 | the stored evidence failed its integrity check; nothing was executed (body: `integrity` report) |
+| 401 | evaluator-token mode only: an evaluator endpoint was called without `Authorization: Bearer <token>` |
+| 403 | ML03 attack session refused: budget exhausted, target out of scope, session closed or session limit (body: `error` code) |
+| 404 | unknown experiment id (ids must match `MLB-EXP-<12 hex>`) or ML03 session id (`MLB-SES-<32 hex>`) |
+| 409 | the stored evidence failed its integrity check; nothing was executed (body: `integrity` report); or an ML03 session was scored before submission |
 | 422 | invalid request, or a valid request that cannot run (e.g. an incompatible parent experiment) |
 | 429 | the concurrency gate is full; nothing was executed — retry |
 | 504 | the wall-clock limit was exceeded for non-experiment work (experiments record a failed status instead) |
 
-Experiment endpoints return the full evidence record. Reports (`/report.md`) are rendered from the stored JSON
+Experiment endpoints return the full evidence record (evaluator-facing). The ML03 **attacker-facing** surface is the
+`ml03-attacker` tag only: a session view, budgeted candidate queries and one submission, with response models that
+contain no ground truth, labels, model parameters, training records or evaluation metrics. With
+`MLBREAK_EVALUATOR_TOKEN` set, every other `/api/` endpoint requires `Authorization: Bearer <token>`. Reports (`/report.md`) are rendered from the stored JSON
 with a fresh integrity check. See `docs/api.md` for examples."""
 
 OPENAPI_TAGS = [
@@ -59,7 +71,10 @@ OPENAPI_TAGS = [
     {"name": "ml01-2d", "description": "ML01 Input Manipulation — 2-D classifier evasion (baseline, attack, defend)."},
     {"name": "ml01-spam", "description": "ML01 Input Manipulation — spam-filter evasion with character-level text."},
     {"name": "ml02", "description": "ML02 Data Poisoning — label flipping and kNN label sanitisation."},
-    {"name": "ml03", "description": "ML03 Model Inversion — private-attribute reconstruction and output policies."},
+    {"name": "ml03", "description": "ML03 Model Inversion — EVALUATOR-facing: experiments, target preview, sessions "
+                                    "(create/score), sensitivity studies."},
+    {"name": "ml03-attacker", "description": "ML03 Model Inversion — ATTACKER-facing: an evaluator-issued session's view, "
+                                             "budgeted candidate queries, one submission. Open in evaluator-token mode."},
     {"name": "evidence", "description": "Stored experiments of every lab: list, read, verify, replay, export."},
     {"name": "regression", "description": "Security regression cases and gate."},
     {"name": "ui", "description": "Dashboard data for the web UI."},
@@ -73,6 +88,18 @@ _TAG_RULES = (  # first matching prefix wins
     ("/api/experiments/defend", "ml01-2d"), ("/api/boundary", "ml01-2d"), ("/api/scenarios/{scenario_id}/dataset", "ml01-2d"),
     ("/api/experiments", "evidence"), ("/api/regression", "regression"), ("/api/dashboard", "ui"), ("/api/", "catalogue"),
 )
+
+
+# Attacker-facing routes: open even in evaluator-token mode. Everything else under /api/ is evaluator-facing.
+ATTACKER_ROUTES = (
+    ("GET", re.compile(r"^/api/(health|owasp|scenarios|limits)$")),
+    ("GET", re.compile(r"^/api/inversion/sessions/[^/]+$")),
+    ("POST", re.compile(r"^/api/inversion/sessions/[^/]+/(query|submit)$")),
+)
+
+
+def is_attacker_route(method: str, path: str) -> bool:
+    return any(method == m and rx.fullmatch(path) for m, rx in ATTACKER_ROUTES)
 
 
 def _tag_routes(app: FastAPI) -> None:
@@ -89,12 +116,27 @@ def _summary(report: dict | None) -> dict | None:
 
 
 def create_app(root: Path | None = None, cases: Path | None = None,
-               frontend_dist: Path | None = FRONTEND_DIST) -> FastAPI:
+               frontend_dist: Path | None = FRONTEND_DIST, evaluator_token: str | None = None) -> FastAPI:
+    """``evaluator_token`` (default: ``MLBREAK_EVALUATOR_TOKEN``) switches on evaluator-token mode: evaluator-facing
+    endpoints then require ``Authorization: Bearer <token>``; attacker-facing ML03 session endpoints stay open. Without
+    a token (the default local research workflow) one local user holds both roles."""
+    token = evaluator_token if evaluator_token is not None else os.environ.get("MLBREAK_EVALUATOR_TOKEN") or None
     store = EvidenceStore(root or data_dir())
+    sessions = SessionStore(store.root)
     engine = ExperimentEngine(store)
     cases_path = cases or cases_dir()
     app = FastAPI(title="MLBreak", version=__version__, description=API_DESCRIPTION, openapi_tags=OPENAPI_TAGS)
     app.state.store, app.state.engine = store, engine
+
+    @app.middleware("http")
+    async def evaluator_gate(request: Request, call_next):
+        path = request.url.path
+        if token and path.startswith("/api/") and not is_attacker_route(request.method, path):
+            given = request.headers.get("authorization", "")
+            if not hmac.compare_digest(given.encode(), f"Bearer {token}".encode()):
+                return JSONResponse({"detail": "evaluator-facing endpoint: Authorization: Bearer <evaluator token> "
+                                               "required", "error": "evaluator_token_required"}, 401)
+        return await call_next(request)
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -109,6 +151,21 @@ def create_app(root: Path | None = None, cases: Path | None = None,
     @app.exception_handler(ExperimentNotFound)
     async def _nf(_: Request, exc: ExperimentNotFound):
         return JSONResponse({"detail": f"experiment not found: {exc.args[0] if exc.args else ''}"}, 404)
+
+    @app.exception_handler(SessionNotFound)
+    async def _snf(_: Request, exc: SessionNotFound):
+        return JSONResponse({"detail": "attack session not found", "error": "session_not_found"}, 404)
+
+    @app.exception_handler(SessionRefused)
+    async def _sref(_: Request, exc: SessionRefused):
+        body = {"detail": exc.message, "error": exc.code}
+        if exc.budget is not None:
+            body["budget"] = exc.budget
+        return JSONResponse(body, 403)
+
+    @app.exception_handler(SessionNotSubmitted)
+    async def _snsub(_: Request, exc: SessionNotSubmitted):
+        return JSONResponse({"detail": str(exc), "error": "not_submitted"}, 409)
 
     @app.exception_handler(InvalidExperiment)
     async def _inv(_: Request, exc: InvalidExperiment):
@@ -222,15 +279,52 @@ def create_app(root: Path | None = None, cases: Path | None = None,
     def inversion_defend(req: InversionDefendRequest):
         return engine.inversion.run_defend(req).model_dump(mode="json")
 
-    @app.post("/api/inversion/targets")
+    @app.post("/api/inversion/targets", response_model=TargetsPreview)
     def inversion_targets(req: InversionTargetsRequest):
-        """Attacker-facing: public features + released output of the selected targets. No private attribute."""
+        """EVALUATOR-facing preview: public features + released output of the selected targets (no attribute)."""
         return engine.inversion.targets_view(req)
 
-    @app.post("/api/inversion/query")
-    def inversion_query(req: InversionQueryRequest):
-        """One black-box query of the prediction service with a full (possibly crafted) record. Not stored."""
-        return engine.inversion.query(req)
+    @app.post("/api/inversion/sensitivity", response_model=SensitivityReport)
+    def inversion_sensitivity(req: SensitivityRequest):
+        """EVALUATOR-facing: controlled sensitivity study, every setting compared with the auxiliary-only attacker."""
+        return engine.inversion.sensitivity(req)
+
+    @app.get("/api/inversion/sensitivity/{report_id}", response_model=SensitivityReport)
+    def inversion_sensitivity_get(report_id: str):
+        return engine.inversion.load_sensitivity(report_id)
+
+    @app.get("/api/inversion/sensitivity/{report_id}/verify")
+    def inversion_sensitivity_verify(report_id: str):
+        return engine.inversion.verify_sensitivity(report_id)
+
+    # ML03 interactive attack sessions -------------------------------------------------------------
+    @app.post("/api/inversion/sessions", response_model=AttackerSessionView)
+    def session_create(req: SessionCreateRequest):
+        """EVALUATOR-facing: issue a session (fixed model, seed, policy, targets and budgets). Returns the attacker
+        view, including the session id to hand to the attacker."""
+        return sessions.create(req)
+
+    @app.get("/api/inversion/sessions/{session_id}", response_model=AttackerSessionView, tags=["ml03-attacker"])
+    def session_view(session_id: str):
+        """ATTACKER-facing: public features + observed outputs of the in-scope targets and the budget state."""
+        return sessions.view(session_id)
+
+    @app.post("/api/inversion/sessions/{session_id}/query", response_model=AttackerQueryResponse,
+              tags=["ml03-attacker"])
+    def session_query(session_id: str, req: SessionQueryRequest):
+        """ATTACKER-facing: one counted candidate query for an in-scope target (403 when the budget is exhausted)."""
+        return sessions.query(session_id, req)
+
+    @app.post("/api/inversion/sessions/{session_id}/submit", response_model=AttackerSubmitReceipt,
+              tags=["ml03-attacker"])
+    def session_submit(session_id: str, req: SessionSubmitRequest):
+        """ATTACKER-facing: submit one guess per target, once. Closes the session; no score is returned."""
+        return sessions.submit(session_id, req)
+
+    @app.get("/api/inversion/sessions/{session_id}/score", response_model=SessionScore)
+    def session_score(session_id: str):
+        """EVALUATOR-facing: score a SUBMITTED session against ground truth and the auxiliary-only attacker."""
+        return sessions.score(session_id)
 
     @app.get("/api/experiments/{experiment_id}/boundary")
     def experiment_boundary(experiment_id: str,

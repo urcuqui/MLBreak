@@ -100,3 +100,67 @@ def candidate_matching(view: AttackerView, query: Callable[[tuple[float, ...], i
 def auxiliary_guess(p1: np.ndarray) -> np.ndarray:
     """The auxiliary-only attacker: no victim output, no query — the prior's choice for every target."""
     return np.array([prior_choice(float(p)) for p in p1], dtype=np.int64)
+
+
+# --------------------------------------------------------------------------------------------------------------
+# Degraded-knowledge attacker (sensitivity studies only; the reference experiment uses candidate_matching above)
+# --------------------------------------------------------------------------------------------------------------
+@dataclass(frozen=True)
+class PartialView:
+    """Attacker knowledge when public features are incomplete or imprecise.
+
+    ``public_features`` holds what the attacker BELIEVES each feature to be (possibly noisy), ``None`` where the
+    feature is unknown. ``imputations`` are complete public-feature rows from the attacker's own auxiliary
+    population, used to fill the unknown features. No ground truth is present."""
+
+    public_features: tuple[float | None, ...]
+    observed_output: float
+    auxiliary_p1: float
+    imputations: tuple[tuple[float, ...], ...] = ()
+    candidate_domain: tuple[int, ...] = DOMAIN
+
+
+@dataclass(frozen=True)
+class NearestResult:
+    inferred: int | None
+    ambiguous: bool
+    rule: str
+    n_queries: int
+    scores: dict[int, float]
+
+
+def nearest_matching(view: PartialView, query: Callable[[tuple[float, ...], int], float], budget: int,
+                     tie_policy: str, margin: float) -> NearestResult:
+    """Nearest-response matching with marginalisation over unknown features.
+
+    Completions: the believed features with unknown entries filled from each imputation row (one completion if
+    nothing is unknown). For each completion in turn, query every candidate (prior-preferred first) while budget
+    remains. Score(c) = mean |response − observed| over c's queries; the lower score wins if it beats the other by
+    more than ``margin``; otherwise — or if some candidate was never queried — the target is ambiguous and
+    ``tie_policy`` applies. Exact matching would fail here because the attacker's records differ from the target's.
+    """
+    missing = [j for j, v in enumerate(view.public_features) if v is None]
+    rows = view.imputations if missing else ((),)
+    completions = []
+    for row in rows:
+        comp = [v for v in view.public_features]
+        for j in missing:
+            comp[j] = row[j]
+        completions.append(tuple(float(v) for v in comp))
+    dist: dict[int, list[float]] = {c: [] for c in view.candidate_domain}
+    order = candidate_order(AttackerView((), view.observed_output, view.auxiliary_p1, view.candidate_domain))
+    n = 0
+    for comp in completions:
+        for c in order:
+            if n >= budget:
+                break
+            dist[c].append(abs(query(comp, c) - view.observed_output))
+            n += 1
+    scores = {c: sum(d) / len(d) for c, d in dist.items() if d}
+    if len(scores) == len(view.candidate_domain):
+        ranked = sorted(scores, key=lambda c: (scores[c], c))
+        if scores[ranked[1]] - scores[ranked[0]] > margin:
+            return NearestResult(ranked[0], False, "nearest_response", n, scores)
+    if tie_policy == "abstain":
+        return NearestResult(None, True, "tie_abstain", n, scores)
+    return NearestResult(prior_choice(view.auxiliary_p1), True, "tie_auxiliary_prior", n, scores)

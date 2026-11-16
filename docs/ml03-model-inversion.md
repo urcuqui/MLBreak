@@ -27,6 +27,9 @@ records (Fredrikson et al., 2015, face reconstruction) is out of scope.
 
 ## 2. Threat model
 
+> **Revised in the hardening milestone:** explicit attacker and evaluator roles with budgeted sessions (§12), and a
+> sensitivity study that tests each assumption below instead of only stating it (§13).
+
 **System under test.** A fictional *account-risk scoring service*. For each account holder it receives four public
 features and one confidential attribute and returns a risk output. A consumer (e.g. a decision letter, a partner
 API) sees that output.
@@ -105,10 +108,10 @@ Fredrikson et al. (2014). For each selected evaluation record:
 
 **Ground-truth isolation.** The attack code receives only an `AttackerView` and a counting `query` closure. The
 module imports nothing that holds data, models or the engine (enforced by a test); a test permutes the hidden
-attributes held by the evaluator and checks that every inference is unchanged. The attacker-facing endpoints
-(`POST /api/inversion/targets`, `POST /api/inversion/query`) never return the attribute, the label or the
-pre-policy score, and the query endpoint evaluates exactly the record it is given (no lookup by target id). Ground
-truth appears only in the stored evidence, in an evaluation-only block.
+attributes held by the evaluator and checks that every inference is unchanged. Over HTTP the attacker uses
+budgeted **attack sessions** only (§12); their response models contain no ground truth, label, model parameter,
+training record or evaluation metric, which a test checks by walking the OpenAPI schema. Ground truth appears only in
+evaluator-facing outputs: the stored evidence (evaluation-only block) and the score of a submitted session.
 
 **Determinism.** No randomness in the attack; target selection `order: "random"` uses `default_rng([seed, 3103])`.
 
@@ -149,9 +152,21 @@ replaying the parent's observations would be meaningless because the policy chan
 service always decides on the full score, so decision accuracy is unaffected; a consumer that thresholds the
 released value is measured separately.
 
-**Output restriction is not a formal privacy guarantee.** It removes the information this attack uses; it bounds
-nothing. Differential privacy is deliberately not implemented: a correct mechanism needs a specified neighbouring
-relation, sensitivity analysis and privacy accounting that this lab does not validate.
+**Output restriction is not a formal privacy guarantee, and it is not differential privacy.** It removes the
+information this attack uses; it bounds nothing.
+
+* Differential privacy is a property of a **randomised** mechanism M: for neighbouring inputs D, D′ and every output
+  set S, P[M(D) ∈ S] ≤ e^ε · P[M(D′) ∈ S]. Full, quantised and label-only outputs are **deterministic** functions of the
+  record. Take the two records that differ only in the private attribute: whenever their outputs differ (a different
+  bucket, a different label), one output has probability 1 under one record and 0 under the other — the ratio is
+  unbounded, ε = ∞. Coarsening only changes *how many* records have distinguishable outputs (the ambiguity rate),
+  which is exactly what §7 and §13 measure.
+* The leak here comes from an **inference-time input** of the target. DP applied to *training* (e.g. DP-SGD) bounds
+  what the model reveals about training records; it does not stop a deterministic score from depending on the
+  attribute that is fed to it at prediction time. Protecting this attribute would need randomised outputs with a
+  stated ε for the attribute (or not using the attribute as an input), plus accounting across repeated queries.
+* A correct mechanism needs a specified neighbouring relation, a sensitivity analysis and privacy accounting that
+  this lab does not validate, so none is implemented and no ε is claimed.
 
 ## 7. Results and privacy–utility analysis (seed 7, 200 targets, default attack)
 
@@ -211,15 +226,20 @@ invariant's description records the observed value.
 
 ## 10. Limitations
 
-* **Strong attacker assumptions**: exact public features and a deterministic service. With noisy auxiliary
-  knowledge, exact matching would fail and a probabilistic (MAP) inversion would be needed; not implemented.
+* **The reference attack's assumptions**: exact public features and a deterministic service. §13 shows what happens
+  when they fail: the exact matcher becomes confidently wrong, and a nearest-response attacker is needed. That
+  attacker is a heuristic (mean distance over imputations), not a calibrated MAP inversion, so its accuracy is a lower
+  bound.
 * **Binary attribute, linear model, synthetic data**: results do not transfer to multi-valued or continuous
   attributes, non-linear models or real populations. The generator makes the attribute strongly predictive by
   design.
 * **One attack**: candidate matching with an auxiliary prior. Its accuracy against a policy is a lower bound for
   that policy.
-* **No formal privacy mechanism**: output policies are not differential privacy; no rate limiting across targets,
-  no anomaly detection of crafted queries.
+* **No formal privacy mechanism**: output policies are not differential privacy (§6), and there is no anomaly
+  detection of crafted queries.
+* **Sessions are accounting, not authentication** (§12). Without an evaluator token, the local user holds both
+  roles. Session files can be edited by anyone with write access to the evidence directory, and budgets do not
+  limit an attacker who is issued several sessions.
 * **Held-out targets only**: no training-record reconstruction, no membership inference (ML04).
 * **Scores are LR probabilities** with their usual calibration; utility metrics are on 400 synthetic records.
 * Single seed per regression case; margins and seed ranges are documented above.
@@ -230,6 +250,89 @@ The lab demonstrates a privacy risk on fictional records to teach measurement an
 at real services or real people's data. The vulnerable service, its data and the attack all run locally; nothing is
 downloaded at runtime. See [responsible-use.md](responsible-use.md).
 
+## 12. Interactive attack sessions and role separation
+
+| Role | Can | Endpoints |
+|---|---|---|
+| Evaluator | run experiments and sensitivity studies; preview targets under any policy; **issue** a session (fixing model, seed, output policy, in-scope targets, per-target and total budgets); **score** a submitted session; read all evidence | `ml03` tag, `evidence`, `regression`, … |
+| Attacker | read its session's view (public features + observed outputs of in-scope targets, budget state); send `{target_index, candidate}` queries; submit one guess per target, once | `ml03-attacker` tag: `GET /api/inversion/sessions/{id}`, `POST …/query`, `POST …/submit` |
+
+* **Session ids** (`MLB-SES-<32 hex>`) are 128-bit random capabilities generated by the server. Create requests are
+  strict and reject a client-supplied id, malformed ids return 404, and there is no reset operation.
+* **Accounting** is server-side and persisted (`<evidence root>/inversion_sessions/<id>.json`). The count is updated
+  under a lock **before** a response is released, so it survives restarts and concurrent requests (tested with 12
+  parallel queries against a budget of 3). Every call costs one query, including repeats.
+* **Scope:** a query names an in-scope target and a candidate only. The server builds the crafted record from that
+  target's public features, so the session cannot probe the model on arbitrary inputs (that would be an extraction
+  surface, ML05). The former unrestricted `POST /api/inversion/query` has been removed.
+* **Refusals** are explicit 403s with a machine-readable `error`: `query_budget_exhausted` (with the budget state),
+  `target_out_of_scope`, `session_closed`, `already_submitted`, `invalid_submission`, `session_limit_reached`
+  (at most 500 sessions per evidence root). Scoring before submission returns 409.
+* **Evaluator-token mode:** set `MLBREAK_EVALUATOR_TOKEN` and every `/api/` endpoint except health, catalogue and the
+  three attacker routes requires `Authorization: Bearer <token>` (constant-time comparison). The UI accepts the
+  token under *Evaluator access* (stored per tab); download links do not carry it. Without a token, the default
+  local research workflow is unchanged.
+* **Intentionally unrestricted, evaluator-only:** the experiment endpoints (they run the attack harness with its own
+  per-target budget), `POST /api/inversion/targets` (an unbudgeted preview under any policy), and sensitivity
+  studies. They are not part of the attacker workflow and require the token in evaluator-token mode.
+
+## 13. Sensitivity study
+
+`mlbreak invert sensitivity` (or `POST /api/inversion/sensitivity`, evaluator-facing) varies one factor at a time
+around the reference experiment. Every setting is compared with the auxiliary-only attacker **on the identical 200
+targets**, and that attacker has **exactly the attacker's public knowledge** (noisy features if the attacker's are
+noisy; the auxiliary mean for unknown features). Only the advantage, with its paired McNemar test, is attributed to
+the model. Each report (`mlbreak.inversion-sensitivity/v1`) stores per-target correctness vectors, re-derives every
+aggregate on verification, and replays bit-identically (`--replay <id>`).
+
+Seed 7, victim `logreg`, full probability unless stated (auxiliary-only = 138/200 with full knowledge):
+
+| Factor | Setting | Inversion | Aux.-only | Advantage | Leakage |
+|---|---|---|---|---|---|
+| reference | exact matching, 2 queries, ties → prior | 200 | 138 | +62 | claimed (2e-19) |
+| features | region_index unknown · exact | 62 | 138 | −76 | — |
+| features | region_index unknown · nearest, 16 queries | 178 | 138 | +40 | claimed (8e-8) |
+| features | 2 features unknown · nearest, 16 queries | 150 | 140 | +10 | not claimed (0.16) |
+| features | no feature known · nearest, 16 queries | 161 | 109 | +52 | claimed (3e-8) |
+| features | noise σ = 0.1 / 0.5 / 1.0 · exact | 62 / 66 / 77 | 138 / 134 / 123 | −76 / −68 / −46 | — |
+| features | noise σ = 0.1 / 0.5 / 1.0 · nearest | 200 / 190 / 167 | 138 / 134 / 123 | +62 / +56 / +44 | claimed |
+| observation | rounded to 3, 2 or 1 decimals | 200 | 138 | +62 | claimed |
+| observation | rounded to 0 decimals | 168 | 138 | +30 | claimed (9e-10) |
+| budget | exact, 1 query, ties → abstain | 62 | 138 | −76 | — (138 abstentions) |
+| budget | exact, 2 or 4 queries | 200 | 138 | +62 | claimed |
+| budget | 2 unknown · nearest, 2 / 4 / 8 / 16 queries | 148 / 154 / 150 / 150 | 140 | +8 / +14 / +10 / +10 | not claimed |
+| ties | label only · prior / abstain | 168 / 96 | 138 | +30 / −42 | claimed / — |
+| ties | 4 buckets · prior / abstain | 193 / 180 | 138 | +55 / +42 | claimed / claimed |
+| auxiliary | 0 / 30 / 100 / 600 rows · full probability | 200 each | 109 / 129 / 138 / 138 | +91 / +71 / +62 / +62 | claimed |
+| auxiliary | 0 / 30 / 100 / 600 rows · label only | 151 / 165 / 169 / 168 | 109 / 129 / 138 / 138 | +42 / +36 / +31 / +30 | claimed |
+| policy | full / 10 / 4 / 2 buckets / label only | 200 / 200 / 193 / 168 / 168 | 138 | +62 / +62 / +55 / +30 / +30 | claimed |
+
+Victim decisions stay at 301/400 under every policy. The consumer-facing cost is in calibration and ranking: Brier
+0.165 / 0.166 / 0.168 / 0.186 / 0.248 and AUC 0.839 / 0.835 / 0.820 / 0.753 / 0.753.
+
+**Negative control** (`logreg-public-only`, same 44 settings): no leakage is claimed in any setting, and the advantage
+is ≤ 0 everywhere. Settings where the exact matcher's assumptions fail even reach −76: the attack is confidently wrong,
+which is not leakage.
+
+What this shows:
+
+1. **The reference result rests on exact knowledge.** With any error in the public features (σ = 0.1) or one unknown
+   feature, the exact matcher's elimination rule becomes *confidently wrong* (below the baseline, in the negative
+   control too). The 100 % figure is a property of the assumptions, not only of the model.
+2. **Leakage survives degraded knowledge** for an adapted attacker. Nearest-response matching keeps a significant
+   advantage at σ = 1 (+44) and with one feature unknown (+40). With two unknown features its advantage is no longer
+   significant, and more queries do not help this heuristic.
+3. **The observed score alone carries the attribute**: knowing *no* public feature, the attacker still gains +52
+   over a featureless baseline, because the attribute shifts the score by roughly 0.3–0.4.
+4. **Rounding the observation** has no effect until the precision is coarser than the attribute's effect: at 0
+   decimals it behaves like label-only (+30).
+5. **Tie handling decides what ambiguity costs**: abstaining under label-only output turns +30 into −42. The
+   advantage measured with the prior fallback comes only from distinguishable targets, and the ties fall back to
+   the baseline's own guess.
+6. **A weaker auxiliary attacker inflates the advantage without changing inversion accuracy** (+91 against a
+   featureless baseline vs +62 against the full auxiliary model). The advantage is always relative to a stated
+   baseline, which is why the baseline is reported next to it.
+
 ## Running it
 
 ```bash
@@ -237,4 +340,17 @@ make demo                                                        # all labs, inc
 PYTHONPATH=src .venv/bin/python -m mlbreak demo --lab ml03       # baseline → inversion → 4 buckets → label-only → negative control → replay
 PYTHONPATH=src .venv/bin/python -m mlbreak invert attack --queries 2
 PYTHONPATH=src .venv/bin/python -m mlbreak invert defend <attack-id> --policy label_only
+PYTHONPATH=src .venv/bin/python -m mlbreak invert sensitivity                    # all factors; --model logreg-public-only for the control
+PYTHONPATH=src .venv/bin/python -m mlbreak invert sensitivity --replay <MLB-SEN-id>
+
+# an interactive session (evaluator issues, attacker queries and submits, evaluator scores)
+B=http://127.0.0.1:8000
+SID=$(curl -s -X POST $B/api/inversion/sessions -H 'Content-Type: application/json' \
+        -d '{"output_policy": {"kind": "label_only"}, "targets": {"max_targets": 10}, "query_budget_per_target": 2}' \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin)["session_id"])')
+curl -s $B/api/inversion/sessions/$SID                                         # attacker view + budget
+curl -s -X POST $B/api/inversion/sessions/$SID/query -H 'Content-Type: application/json' -d '{"target_index": 0, "candidate": 1}'
+curl -s -X POST $B/api/inversion/sessions/$SID/submit -H 'Content-Type: application/json' \
+     -d '{"guesses": [{"target_index": 0, "inferred": 1}, …one per target…]}'
+curl -s $B/api/inversion/sessions/$SID/score                                    # evaluator only, after submission
 ```
