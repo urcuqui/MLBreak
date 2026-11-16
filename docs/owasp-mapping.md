@@ -8,7 +8,7 @@ Taxonomy: **OWASP Machine Learning Security Top 10, 2023 edition**
 |---|---|---|---|
 | ML01:2023 | Input Manipulation Attack | **Implemented** (2 scenarios) | `ml01-moons-evasion` (2-D numerical evasion), `ml01-spam-filter-evasion` (character-level text evasion) |
 | ML02:2023 | Data Poisoning Attack | **Implemented** | `ml02-moons-label-flip` |
-| ML03:2023 | Model Inversion Attack | Not implemented | — |
+| ML03:2023 | Model Inversion Attack | **Implemented** | `ml03-private-attribute-inversion` |
 | ML04:2023 | Membership Inference Attack | Not implemented | — |
 | ML05:2023 | Model Theft | Not implemented | — |
 | ML06:2023 | AI Supply Chain Attacks | Not implemented | — |
@@ -19,6 +19,18 @@ Taxonomy: **OWASP Machine Learning Security Top 10, 2023 edition**
 
 A category is marked implemented only when it has a registered scenario, passing acceptance tests and
 at least one passing security regression case. `tests/test_regression.py` enforces this.
+
+## ML03 coverage
+
+| OWASP ML03 element | MLBreak |
+|---|---|
+| Model outputs used to infer sensitive information about an input record | Black-box candidate matching reconstructs a confidential binary attribute from a released risk output |
+| Attacker with API access | Bounded, counted queries per target to the prediction service |
+| Prevention: limit the information in outputs | Quantised probability and label-only policies, each evaluated by a NEW adaptive inversion |
+| Prevention: differential privacy / rate limiting | Not implemented (see [ml03-model-inversion.md](ml03-model-inversion.md#10-limitations)) |
+
+Leakage is attributed to the model only through the paired advantage over an auxiliary-only attacker. Details:
+[ml03-model-inversion.md](ml03-model-inversion.md).
 
 ## ML02 coverage
 

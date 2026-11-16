@@ -2,7 +2,8 @@ import type {
   AttackConfig, BoundaryResponse, Dashboard, DatasetResponse, Defense, ExperimentRecord,
   ExperimentSummary, KnnDefense, LabelFlipConfig, ModelKey, OwaspCategory, PoisoningCase, PoisoningRecord,
   RegressionReport, ReplayResult, SecurityCase, VerifyReport, ClassifyResult, TextAttackConfig, TextDefense,
-  TextMessage, TextModelId, TextRecord,
+  TextMessage, TextModelId, TextRecord, TextCase, InversionCase, InversionAttackConfig, InversionModelId, InversionRecord,
+  InversionTargetsView, OutputPolicy, RestrictivePolicy, TargetSelection,
 } from "./types";
 
 export class ApiError extends Error {
@@ -75,7 +76,7 @@ export const api = {
     return r.text();
   },
   verify: (id: string) => req<VerifyReport>(`/api/experiments/${encodeURIComponent(id)}/verify`),
-  anyExperiment: (id: string) => req<ExperimentRecord | PoisoningRecord | TextRecord>(`/api/experiments/${encodeURIComponent(id)}`),
+  anyExperiment: (id: string) => req<ExperimentRecord | PoisoningRecord | TextRecord | InversionRecord>(`/api/experiments/${encodeURIComponent(id)}`),
   // ML02 data poisoning
   poisonBaseline: (c: Ctx) => post<PoisoningRecord>("/api/experiments/poisoning/baseline", c),
   poisonAttack: (c: Ctx, poison: LabelFlipConfig) =>
@@ -100,7 +101,16 @@ export const api = {
       parent_experiment_id }),
   textDefend: (parent_experiment_id: string, defense: TextDefense) =>
     post<TextRecord>("/api/experiments/text/defend", { parent_experiment_id, defense }),
-  cases: () => req<(SecurityCase | PoisoningCase)[]>("/api/regression/cases"),
+  // ML03 model inversion
+  inversionTargets: (model_id: InversionModelId, seed: number, output_policy: OutputPolicy, targets: TargetSelection) =>
+    serial(() => post<InversionTargetsView>("/api/inversion/targets", { model_id, seed, output_policy, targets })),
+  inversionBaseline: (model_id: InversionModelId, seed: number, targets: TargetSelection) =>
+    post<InversionRecord>("/api/experiments/inversion/baseline", { model_id, seed, targets }),
+  inversionAttack: (model_id: InversionModelId, seed: number, targets: TargetSelection, attack: InversionAttackConfig) =>
+    post<InversionRecord>("/api/experiments/inversion/attack", { model_id, seed, targets, attack }),
+  inversionDefend: (parent_experiment_id: string, output_policy: RestrictivePolicy) =>
+    post<InversionRecord>("/api/experiments/inversion/defend", { parent_experiment_id, output_policy }),
+  cases: () => req<(SecurityCase | PoisoningCase | TextCase | InversionCase)[]>("/api/regression/cases"),
   runRegression: () => post<RegressionReport>("/api/regression/run", {}),
   latestRegression: () => req<RegressionReport | null>("/api/regression/latest"),
 };

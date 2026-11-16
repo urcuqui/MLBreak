@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { Badge, ErrorBox, ExpLink, Panel } from "../components/ui";
-import type { PoisoningCase, RegressionReport, SecurityCase, TextCase } from "../types";
+import type { InversionCase, PoisoningCase, RegressionReport, SecurityCase, TextCase } from "../types";
 
 const KIND_HELP: Record<string, string> = {
   security: "the defense must hold",
@@ -10,7 +10,7 @@ const KIND_HELP: Record<string, string> = {
 };
 
 export function Regression() {
-  const [cases, setCases] = useState<(SecurityCase | PoisoningCase | TextCase)[]>([]);
+  const [cases, setCases] = useState<(SecurityCase | PoisoningCase | TextCase | InversionCase)[]>([]);
   const [report, setReport] = useState<RegressionReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,7 +43,12 @@ export function Regression() {
         const r = result(c.id);
         return (
           <Panel key={c.id} title={`${c.id} — ${c.title}`}
-            subtitle={"family" in c && c.family === "text_evasion"
+            subtitle={"family" in c && c.family === "inversion"
+              ? <>{c.owasp_id} · model inversion ({c.model_id}) · candidate matching, ≤ {c.attack.query_budget} queries/target,
+                  ties → {c.attack.tie_policy} · {c.defense ? <>output policy {c.defense.kind}{c.defense.kind === "quantized_probability"
+                  ? ` (${c.defense.bins} buckets)` : ""} · defended evaluation: <strong>{c.defended_evaluation}</strong></>
+                  : <>no defense (undefended invariants only)</>}</>
+              : "family" in c && c.family === "text_evasion"
               ? <>{c.owasp_id} · spam filter ({c.model_id}) · {c.attack.goal.replace(/_/g, " ")} · ≤ {c.attack.max_edit_distance} edits,
                   {" "}{c.attack.operations.join("/")} with {c.attack.charsets.join("+")} · defense {c.defense.kind} · defended evaluation:{" "}
                   <strong>{c.defended_evaluation}</strong></>
@@ -65,10 +70,12 @@ export function Regression() {
                     <td title={KIND_HELP[inv.kind]}>{inv.kind}</td><td>{inv.posture}</td>
                     <td className="mono">{inv.statistic ? `${inv.statistic}(${inv.metric})` : inv.metric} {inv.op} {inv.value}</td>
                     <td className="num">{o?.observed == null ? "—"
-                      : inv.statistic === "mcnemar_p_value" ? o.observed.toExponential(2) : o.observed.toFixed(4)}
-                      {o?.details && (
+                      : inv.statistic === "mcnemar_p_value" || inv.metric.endsWith("p_value") ? o.observed.toExponential(2)
+                      : o.observed.toFixed(4)}
+                      {o?.details && o.details.n_paired != null && (
                         <div className="small muted" title={o.details.population}>
-                          paired n={o.details.n_paired} · {o.details.undefended_successes}→{o.details.defended_successes} succeeded
+                          paired n={o.details.n_paired} · {o.details.undefended_successes}→{o.details.defended_successes}{" "}
+                          {"family" in c && c.family === "inversion" ? "reconstructed correctly" : "succeeded"}
                           · b={o.details.only_undefended_succeeded_b} c={o.details.only_defended_succeeded_c}
                         </div>)}</td>
                     <td>{o ? (o.passed ? <Badge tone="good">pass</Badge> : <Badge tone="critical">fail</Badge>) : "—"}

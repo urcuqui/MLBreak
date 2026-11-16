@@ -45,6 +45,10 @@ class Limits:
     max_text_query_budget: int = 1000      # model queries per attacked message
     max_text_samples: int = 300            # messages attacked per experiment
     max_text_length: int = 2000            # characters in a free-text classify request
+    # ML03 model inversion (private-attribute reconstruction)
+    max_inversion_targets: int = 400       # evaluation records attacked per experiment (= evaluation split size)
+    max_inversion_query_budget: int = 16   # victim queries per attacked record
+    max_inversion_seed: int = 100_000      # dataset/model seed (bounded, see docs/ml03-model-inversion.md)
     # Wall-clock limit for a whole security regression suite (cases not started in time FAIL).
     max_regression_seconds: float = 600.0
 

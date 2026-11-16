@@ -48,10 +48,15 @@ export function RequiresStep({ base, step, what }: { base: string; step: StepId;
   return <p className="muted small mt">Requires {what}: run it in the <Link to={`/lab/${base}/${step}`}>{label}</Link> step first.</p>;
 }
 
-interface EvidenceRecord { experiment_id: string; evaluation: string; status: string; metrics: { attack_success_rate?: Ratio } }
+interface EvidenceRecord { experiment_id: string; evaluation: string; status: string; metrics: object }
+
+/** Headline metric of the evidence table; labs whose success notion differs (ML03) pass their own. */
+export interface HeadlineMetric { label: string; key: string }
+const ATTACK_SUCCESS: HeadlineMetric = { label: "Attack success", key: "attack_success_rate" };
 
 /** The Evidence & replay step, identical in every lab: export, verify integrity, replay. */
-export function EvidenceTable({ rows, disabled }: { rows: [string, EvidenceRecord | undefined][]; disabled?: boolean }) {
+export function EvidenceTable({ rows, disabled, headline = ATTACK_SUCCESS }:
+  { rows: [string, EvidenceRecord | undefined][]; disabled?: boolean; headline?: HeadlineMetric }) {
   const [replays, setReplays] = useState<Record<string, ReplayResult>>({});
   const [verifies, setVerifies] = useState<Record<string, VerifyReport>>({});
   const [running, setRunning] = useState<string | null>(null);
@@ -70,7 +75,7 @@ export function EvidenceTable({ rows, disabled }: { rows: [string, EvidenceRecor
       {running && <div className="busy" role="status"><span className="spinner" /> Running: {running}…</div>}
       <div className="table-wrap"><table className="table">
         <caption className="sr-only">Experiments of this session with export, integrity and replay actions</caption>
-        <thead><tr><th>Step</th><th>Experiment</th><th>Type</th><th>Status</th><th>Attack success</th><th>Export</th>
+        <thead><tr><th>Step</th><th>Experiment</th><th>Type</th><th>Status</th><th>{headline.label}</th><th>Export</th>
           <th>Integrity</th><th>Exact replay</th></tr></thead>
         <tbody>{rows.map(([step, r]) => {
           if (!r) return <tr key={step}><td>{step}</td><td colSpan={7} className="muted">not run</td></tr>;
@@ -78,7 +83,7 @@ export function EvidenceTable({ rows, disabled }: { rows: [string, EvidenceRecor
           return (
             <tr key={step}>
               <td>{step}</td><td><ExpLink id={r.experiment_id} /></td><td><EvalBadge evaluation={r.evaluation} /></td>
-              <td><StatusBadge status={r.status} /></td><td><RatioView r={r.metrics.attack_success_rate} /></td>
+              <td><StatusBadge status={r.status} /></td><td><RatioView r={(r.metrics as Record<string, Ratio | undefined>)[headline.key]} /></td>
               <td><span className="row gap"><a href={l.json} download>JSON</a><a href={l.md} download>MD</a><a href={l.csv} download>CSV</a></span></td>
               <td><button className="btn small" disabled={off} onClick={() => act(r.experiment_id, "verify")}>Verify</button>{" "}
                 {v && (v.ok ? <Badge tone="good">consistent</Badge> : <Badge tone="critical">failed</Badge>)}</td>

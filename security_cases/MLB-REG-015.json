@@ -1,0 +1,53 @@
+{
+  "id": "MLB-REG-015",
+  "family": "inversion",
+  "title": "Output quantisation changes reconstruction effectiveness but is not assumed secure",
+  "owasp_id": "ML03:2023",
+  "model_id": "logreg",
+  "seed": 7,
+  "defense": {
+    "kind": "quantized_probability",
+    "bins": 4
+  },
+  "defended_evaluation": "adaptive",
+  "invariants": [
+    {
+      "id": "quantisation-changes-outcome",
+      "kind": "security",
+      "posture": "paired",
+      "statistic": "absolute_reduction",
+      "metric": "attribute_inference_accuracy",
+      "op": ">",
+      "value": 0.0,
+      "description": "On the same targets, 4-bucket quantisation must reduce correct reconstructions (observed 7/200 = 3.5 points, McNemar p = 0.0078; positive on 20/20 seeds but significant at 0.05 on only 7/20, so significance is NOT asserted)."
+    },
+    {
+      "id": "still-leaks",
+      "kind": "attack_canary",
+      "posture": "defended",
+      "metric": "inference_advantage",
+      "op": ">=",
+      "value": 0.2,
+      "description": "A NEW attack against the quantised service must still beat the auxiliary-only attacker by ≥ 20 points (observed +55/200 = +27.5%; 20-seed min +24.0). Quantisation is not a privacy guarantee."
+    },
+    {
+      "id": "leakage-still-significant",
+      "kind": "attack_canary",
+      "posture": "defended",
+      "metric": "leakage_p_value",
+      "op": "<=",
+      "value": 0.001,
+      "description": "Leakage under quantisation must remain significant (observed p = 2.8e-17)."
+    },
+    {
+      "id": "decisions-unchanged",
+      "kind": "utility",
+      "posture": "defended",
+      "metric": "consumer_decision_accuracy",
+      "op": ">=",
+      "value": 0.74,
+      "description": "Quantisation must not cost decision accuracy (observed 301/400 = 75.25%, identical to full probability on 20/20 seeds)."
+    }
+  ],
+  "rationale": "Bucket width 0.25 only hides the attribute when both candidate scores fall into the same bucket; the attribute shifts the score by more than that for most records. The effect is real but small and seed-dependent."
+}

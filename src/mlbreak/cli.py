@@ -12,6 +12,8 @@ from .experiments import EvidenceIntegrityError, ExperimentEngine
 from .regression import run_suite
 from .text.schemas import (TextAdversarialTrainingDefense, TextAttackConfig, TextAttackRequest, TextBaselineRequest,
                            TextClassifyRequest, TextDefendRequest, TextNormalizationDefense, TextSampleSelection)
+from .inversion.schemas import (InversionAttackConfig, InversionAttackRequest, InversionBaselineRequest,
+                                InversionDefendRequest, LabelOnly, QuantizedProbability, TargetSelection)
 from .poisoning.schemas import (KnnLabelSanitization, LabelFlipConfig, PoisonAttackRequest, PoisonBaselineRequest,
                                 PoisonDefendRequest)
 from .schemas import (AdversarialTrainingDefense, AttackConfig, AttackRequest, BaselineRequest,
@@ -292,9 +294,79 @@ def _demo_text(eng) -> tuple[list, bool]:
     return recs, r["identical"]
 
 
+_INVERSION_KEYS = ("baseline_inference_accuracy", "attribute_inference_accuracy", "inference_advantage",
+                   "undefended_attribute_inference_accuracy", "defense_accuracy_reduction", "ambiguity_rate",
+                   "budget_exhaustion_rate", "victim_prediction_accuracy", "consumer_decision_accuracy",
+                   "accuracy_without_private_attribute")
+
+
+def _print_inversion(rec) -> None:
+    pol = rec.output_policy.get("kind") + (f"/{rec.output_policy['bins']} bins" if "bins" in rec.output_policy else "")
+    print(f"  {rec.experiment_id}  ML03 mode={rec.mode} evaluation={rec.evaluation} model={rec.model['model_id']} "
+          f"policy={pol} status={rec.status}")
+    if rec.error:
+        print(f"    error: {rec.error}")
+    m = rec.metrics
+    for key in _INVERSION_KEYS:
+        if key in m:
+            print(f"    {key:<40} {_pct(m[key])}")
+    if "leakage_p_value" in m:
+        lp = m["leakage_p_value"]
+        print(f"    {'leakage vs auxiliary baseline':<40} p={lp['value']:.3g} → "
+              f"{'claimed' if lp['leakage_claimed'] else 'NOT claimed'}")
+    if "queries" in m:
+        print(f"    {'queries per target':<40} mean {m['queries']['mean']:.2f}, max {m['queries']['max']} "
+              f"(budget {m['queries']['budget_per_target']})")
+    if "released_brier_score" in m:
+        print(f"    {'released Brier score / ranking AUC':<40} {m['released_brier_score']['value']:.4f} / "
+              f"{m['released_ranking_auc']['value']:.4f}")
+
+
+def _policy(args):
+    return LabelOnly() if args.policy == "label_only" else QuantizedProbability(bins=args.bins)
+
+
+def cmd_invert(args) -> int:
+    lab = _engine().inversion
+    targets = TargetSelection(max_targets=args.targets) if hasattr(args, "targets") else None
+    if args.invert_cmd == "baseline":
+        rec = lab.run_baseline(InversionBaselineRequest(model_id=args.model, seed=args.seed, targets=targets))
+    elif args.invert_cmd == "attack":
+        cfg = InversionAttackConfig(query_budget=args.queries, tie_policy=args.tie_policy)
+        rec = lab.run_attack(InversionAttackRequest(model_id=args.model, seed=args.seed, targets=targets, attack=cfg))
+    else:
+        rec = lab.run_defend(InversionDefendRequest(parent_experiment_id=args.parent, output_policy=_policy(args)))
+    _print_inversion(rec)
+    return 0 if rec.status == "completed" else 1
+
+
+def _demo_ml03(eng) -> tuple[list, bool]:
+    lab, recs = eng.inversion, []
+
+    def show(rec):
+        recs.append(rec)
+        _print_inversion(rec)
+        return rec
+
+    print("ML03-1) Baseline — victim utility, and the auxiliary-only attacker on 200 held-out targets (no queries)")
+    show(lab.run_baseline(InversionBaselineRequest()))
+    print("\nML03-2) Inversion — candidate matching against the full-probability service (≤ 2 queries per target)")
+    atk = show(lab.run_attack(InversionAttackRequest()))
+    for i, pol in enumerate((QuantizedProbability(bins=4), LabelOnly()), start=3):
+        print(f"\nML03-{i}) Adaptive inversion against {pol.kind}" + (f" ({pol.bins} bins)" if pol.kind != "label_only" else ""))
+        show(lab.run_defend(InversionDefendRequest(parent_experiment_id=atk.experiment_id, output_policy=pol)))
+    print("\nML03-5) Negative control — the service ignores the private attribute (public-only model)")
+    neg = show(lab.run_attack(InversionAttackRequest(model_id="logreg-public-only")))
+    ok = not neg.metrics["leakage_p_value"]["leakage_claimed"]
+    r = eng.replay(atk.experiment_id)
+    print(f"\nML03-6) Exact replay of {atk.experiment_id}: identical={r['identical']}")
+    return recs, ok and r["identical"]
+
+
 def cmd_demo(args) -> int:
     eng = _engine()
-    labs = {"ml01": ["ml01"], "ml01-spam": ["ml01-spam"], "ml02": ["ml02"], "all": ["ml01", "ml01-spam", "ml02"]}[args.lab]
+    labs = {"ml01": ["ml01"], "ml01-spam": ["ml01-spam"], "ml02": ["ml02"], "ml03": ["ml03"],
+            "all": ["ml01", "ml01-spam", "ml02", "ml03"]}[args.lab]
     status = 0
     for k, lab in enumerate(labs):
         if k:
@@ -302,7 +374,7 @@ def cmd_demo(args) -> int:
         if lab == "ml01":
             status |= _demo_ml01(eng)
             continue
-        recs, ok = (_demo_text if lab == "ml01-spam" else _demo_ml02)(eng)
+        recs, ok = {"ml01-spam": _demo_text, "ml02": _demo_ml02, "ml03": _demo_ml03}[lab](eng)
         integrity = [eng.verify(r.experiment_id) for r in recs]
         print(f"\n{lab.upper()} evidence integrity:", ", ".join(
             f"{i['experiment_id']}={'ok' if i['ok'] else 'FAILED'}" for i in integrity))
@@ -468,8 +540,26 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--action", default="relabel", choices=["relabel", "remove"])
     ps.set_defaults(fn=cmd_poison)
 
+    s = sub.add_parser("invert", help="ML03 model inversion: baseline | attack | defend")
+    isub = s.add_subparsers(dest="invert_cmd", required=True)
+    for name, hlp in (("baseline", "victim utility + auxiliary-only attacker"),
+                      ("attack", "candidate-matching inversion against the full-probability service")):
+        ins = isub.add_parser(name, help=hlp)
+        ins.add_argument("--model", default="logreg", choices=["logreg", "logreg-public-only"])
+        ins.add_argument("--seed", type=int, default=7)
+        ins.add_argument("--targets", type=int, default=200, help="number of held-out targets")
+        if name == "attack":
+            ins.add_argument("--queries", type=int, default=2, help="query budget per target")
+            ins.add_argument("--tie-policy", default="auxiliary_prior", choices=["auxiliary_prior", "abstain"])
+        ins.set_defaults(fn=cmd_invert)
+    ins = isub.add_parser("defend", help="NEW (adaptive) inversion against a restrictive output policy")
+    ins.add_argument("parent")
+    ins.add_argument("--policy", default="label_only", choices=["label_only", "quantized_probability"])
+    ins.add_argument("--bins", type=int, default=4)
+    ins.set_defaults(fn=cmd_invert)
+
     s = sub.add_parser("demo", help="run the full Baseline → Attack → Defend → Replay walkthrough")
-    s.add_argument("--lab", default="ml01", choices=["ml01", "ml01-spam", "ml02", "all"])
+    s.add_argument("--lab", default="ml01", choices=["ml01", "ml01-spam", "ml02", "ml03", "all"])
     s.set_defaults(fn=cmd_demo)
     return p
 

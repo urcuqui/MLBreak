@@ -27,12 +27,14 @@ runs; routes are grouped by tag. This page summarises the contract and gives exa
 | `ml01-2d` | `POST /api/experiments/baseline`, `/attack`, `/defend`; `POST /api/boundary`; `GET /api/scenarios/ml01-moons-evasion/dataset` |
 | `ml01-spam` | `POST /api/experiments/text/baseline`, `/text/attack`, `/text/defend`; `POST /api/text/classify`; `GET /api/text/messages` |
 | `ml02` | `POST /api/experiments/poisoning/baseline`, `/poisoning/attack`, `/poisoning/defend`; `GET /api/experiments/{id}/boundary` |
+| `ml03` | `POST /api/experiments/inversion/baseline`, `/inversion/attack`, `/inversion/defend`; attacker-facing `POST /api/inversion/targets` (public features + observed output, never the attribute) and `POST /api/inversion/query` (one black-box query with a supplied record) |
 | `evidence` | `GET /api/experiments`, `/api/experiments/{id}`, `/{id}/verify`, `/{id}/evidence.json`, `/{id}/report.md`, `/{id}/samples.csv`; `POST /api/experiments/{id}/replay` |
 | `regression` | `GET /api/regression/cases`, `/api/regression/latest`; `POST /api/regression/run` |
 | `ui` | `GET /api/dashboard` |
 
 Adaptive attacks use the `attack` endpoint of their lab with `target_defense` and `parent_experiment_id`;
-non-adaptive replay uses the lab's `defend` endpoint. ML02 has no adaptive evaluation.
+non-adaptive replay uses the lab's `defend` endpoint. ML02 has no adaptive evaluation. In ML03 the `defend`
+endpoint runs a NEW adaptive inversion against an output policy (there is no non-adaptive replay).
 
 ## Examples
 
@@ -53,6 +55,11 @@ curl -s $B/api/experiments/$A/report.md         # seven-section report, rendered
 
 # ML01 2-D: PGD against the undefended model
 curl -s -X POST $B/api/experiments/attack -H 'Content-Type: application/json' -d '{"attack": {"attack": "pgd", "epsilon": 0.3}}'
+# ML03: inversion against full probability, then against label-only output
+I=$(curl -s -X POST $B/api/experiments/inversion/attack -H 'Content-Type: application/json' -d '{}' \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin)["experiment_id"])')
+curl -s -X POST $B/api/experiments/inversion/defend -H 'Content-Type: application/json' \
+     -d "{\"parent_experiment_id\": \"$I\", \"output_policy\": {\"kind\": \"label_only\"}}" > /dev/null
 # ML02: targeted label flipping
 curl -s -X POST $B/api/experiments/poisoning/attack -H 'Content-Type: application/json' \
      -d '{"poison": {"strategy": "targeted", "fraction": 0.1, "target_class": 1, "selection": "boundary"}}'

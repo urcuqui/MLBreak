@@ -58,7 +58,10 @@ CATEGORIES: tuple[OwaspCategory, ...] = (
          lab_status="implemented",
          scenario_ids=["ml02-moons-label-flip"]),
     _cat(3, "Model Inversion Attack", "Model_Inversion_Attack",
-         "Model outputs are used to reconstruct sensitive information about training inputs."),
+         "Model outputs are used to reconstruct sensitive information about the records the model processes "
+         "or was trained on.",
+         lab_status="implemented",
+         scenario_ids=["ml03-private-attribute-inversion"]),
     _cat(4, "Membership Inference Attack", "Membership_Inference_Attack",
          "An attacker determines whether a specific record was part of the training set."),
     _cat(5, "Model Theft", "Model_Theft",

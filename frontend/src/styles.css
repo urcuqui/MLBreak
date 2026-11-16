@@ -148,3 +148,9 @@ textarea { background: var(--surface-2); color: var(--text); border: 1px solid v
 .checks { display: flex; flex-wrap: wrap; gap: 8px 14px; font-size: 12px; color: var(--text-2); }
 .checks label, .form .checks label { display: inline-flex; flex-direction: row; gap: 5px; align-items: center; }
 .scenario-list { margin: 0 0 6px; padding-left: 16px; font-size: 13px; display: flex; flex-direction: column; gap: 2px; }
+
+/* ML03 model inversion */
+.trace-steps { list-style: none; padding-left: 0; margin: 0; display: flex; flex-direction: column; gap: 12px; }
+.trace-steps > li > .row { margin-bottom: 4px; }
+.hidden-attr { color: var(--muted); font-style: italic; white-space: nowrap; }
+fieldset.form { border: 0; padding: 0; margin: 0; min-width: 0; }

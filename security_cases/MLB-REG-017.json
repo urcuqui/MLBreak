@@ -1,0 +1,48 @@
+{
+  "id": "MLB-REG-017",
+  "family": "inversion",
+  "title": "Negative control: no leakage is claimed when outputs carry no attribute information",
+  "owasp_id": "ML03:2023",
+  "model_id": "logreg-public-only",
+  "seed": 7,
+  "defended_evaluation": "none",
+  "invariants": [
+    {
+      "id": "no-advantage",
+      "kind": "security",
+      "posture": "undefended",
+      "metric": "inference_advantage",
+      "op": "==",
+      "value": 0.0,
+      "description": "With a service whose model ignores the attribute, inversion must equal the auxiliary-only attacker exactly (observed +0/200 on 20/20 seeds)."
+    },
+    {
+      "id": "no-leakage-claim",
+      "kind": "security",
+      "posture": "undefended",
+      "metric": "leakage_p_value",
+      "op": ">=",
+      "value": 0.05,
+      "description": "The leakage test must not be significant (observed p = 1.0: no discordant pairs)."
+    },
+    {
+      "id": "all-ambiguous",
+      "kind": "security",
+      "posture": "undefended",
+      "metric": "ambiguity_rate",
+      "op": "==",
+      "value": 1.0,
+      "description": "Every target must be reported ambiguous, i.e. the attack does not invent distinctions (observed 200/200)."
+    },
+    {
+      "id": "raw-accuracy-not-zero",
+      "kind": "attack_canary",
+      "posture": "undefended",
+      "metric": "attribute_inference_accuracy",
+      "op": ">=",
+      "value": 0.55,
+      "description": "Raw accuracy stays at the baseline's level (observed 138/200 = 69.0%), which is exactly why raw accuracy is never reported as leakage."
+    }
+  ],
+  "rationale": "Guards against spurious leakage claims: high accuracy that comes entirely from auxiliary knowledge must produce zero advantage and no claim."
+}

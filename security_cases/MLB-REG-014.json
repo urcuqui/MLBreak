@@ -1,0 +1,39 @@
+{
+  "id": "MLB-REG-014",
+  "family": "inversion",
+  "title": "Inversion gains measurable information over the auxiliary-only baseline",
+  "owasp_id": "ML03:2023",
+  "model_id": "logreg",
+  "seed": 7,
+  "defended_evaluation": "none",
+  "invariants": [
+    {
+      "id": "aux-baseline-informative",
+      "kind": "attack_canary",
+      "posture": "undefended",
+      "metric": "baseline_inference_accuracy",
+      "op": ">=",
+      "value": 0.55,
+      "description": "The private attribute must stay partly predictable from public data (observed 138/200 = 69.0%; 20-seed range 61.0–73.0%), so raw accuracy cannot be read as leakage."
+    },
+    {
+      "id": "advantage-measurable",
+      "kind": "attack_canary",
+      "posture": "undefended",
+      "metric": "inference_advantage",
+      "op": ">=",
+      "value": 0.2,
+      "description": "Inversion against full probability must beat the auxiliary-only attacker by ≥ 20 points on the same targets (observed +62/200 = +31.0%; 20-seed range +27.0 to +39.0 points)."
+    },
+    {
+      "id": "leakage-significant",
+      "kind": "attack_canary",
+      "posture": "undefended",
+      "metric": "leakage_p_value",
+      "op": "<=",
+      "value": 0.001,
+      "description": "The paired one-sided McNemar test of inversion vs baseline must be significant (observed p = 2.2e-19; 20-seed max 5.6e-17)."
+    }
+  ],
+  "rationale": "A deterministic full-probability score that depends on the private attribute identifies it for an attacker who knows the other inputs. The leakage claim rests on the paired advantage over an auxiliary-only attacker, not on raw accuracy."
+}

@@ -1,7 +1,8 @@
 """Security regression: declared defensive invariants checked against real runs.
 
 A case (``security_cases/MLB-REG-*.json``) pins an attack, a defense and a set
-of invariants. ML01 cases (``owasp_id: ML01:2023``) pin an evasion attack; ML02
+of invariants. ML03 cases (``family: inversion``) pin a model-inversion attack and an output
+policy evaluated by a NEW adaptive inversion. ML01 cases (``owasp_id: ML01:2023``) pin an evasion attack; ML02
 cases (``owasp_id: ML02:2023``, ``family: poisoning``) pin a label-flipping attack
 and a label-validation defense, evaluated by defensive replay of the exact
 poisoned training set. Each invariant names a *posture* and a metric:
@@ -38,6 +39,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .config import LIMITS
 from .experiments import EngineBusy, ExperimentEngine
+from .inversion.metrics import INVARIANT_METRICS as INVERSION_METRICS
+from .inversion.schemas import (InversionAttackConfig, InversionAttackRequest, InversionDefendRequest,
+                                RestrictivePolicy, TargetSelection)
 from .poisoning.metrics import INVARIANT_METRICS as POISONING_METRICS
 from .poisoning.schemas import KnnLabelSanitization, LabelFlipConfig, PoisonAttackRequest, PoisonDefendRequest
 from .stats import STATISTICS, paired_comparison
@@ -150,11 +154,64 @@ class TextCase(BaseModel):
     rationale: str
 
 
-AnyCase = SecurityCase | PoisoningCase | TextCase
+class InversionInvariant(BaseModel):
+    """ML03 invariant. Paired statistics compare the per-target CORRECTNESS of the reconstruction (not an evasion
+    success) between the full-probability attack and the attack against the output policy, on the same targets.
+    ``evidence_consistency`` is computed by the runner: 1.0 iff every record of the case passes integrity +
+    lineage verification and the attack record replays bit-identically (0.0 otherwise)."""
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    kind: Literal["security", "utility", "attack_canary"]
+    posture: Literal["undefended", "defended", "paired"]
+    statistic: Literal[STATISTICS] | None = None  # type: ignore[valid-type]
+    metric: Literal[INVERSION_METRICS]  # type: ignore[valid-type]
+    op: Literal["<=", ">=", "<", ">", "=="]
+    value: float = Field(ge=0, le=1)
+    description: str
+
+    @model_validator(mode="after")
+    def _paired(self):
+        if (self.posture == "paired") != (self.statistic is not None):
+            raise ValueError("posture 'paired' requires a statistic, and a statistic requires posture 'paired'")
+        if self.posture == "paired" and self.metric != "attribute_inference_accuracy":
+            raise ValueError("ML03 paired statistics compare attribute_inference_accuracy between the two postures")
+        return self
+
+
+class InversionCase(BaseModel):
+    """ML03 case: ``undefended`` = inversion against the full-probability service; ``defended`` = a NEW adaptive
+    inversion against ``defense`` (an output policy) with the same targets and attack configuration."""
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(pattern=r"^MLB-REG-\d{3}$")
+    family: Literal["inversion"] = "inversion"
+    title: str
+    owasp_id: Literal["ML03:2023"]
+    scenario_id: Literal["ml03-private-attribute-inversion"] = "ml03-private-attribute-inversion"
+    model_id: Literal["logreg", "logreg-public-only"] = "logreg"
+    seed: int = 7
+    attack: InversionAttackConfig = Field(default_factory=InversionAttackConfig)
+    targets: TargetSelection = Field(default_factory=TargetSelection)
+    defense: RestrictivePolicy | None = None
+    defended_evaluation: Literal["adaptive", "none"] = "adaptive"
+    invariants: list[InversionInvariant] = Field(min_length=1)
+    rationale: str
+
+    @model_validator(mode="after")
+    def _check(self):
+        if (self.defense is None) != (self.defended_evaluation == "none"):
+            raise ValueError("defended_evaluation must be 'none' exactly when no defense (output policy) is declared")
+        if self.defense is None and any(i.posture != "undefended" for i in self.invariants):
+            raise ValueError("defended/paired invariants need a defense (output policy)")
+        return self
+
+
+AnyCase = SecurityCase | PoisoningCase | TextCase | InversionCase
 
 
 def parse_case(text: str) -> AnyCase:
     data = json.loads(text)
+    if data.get("family") == "inversion" or data.get("owasp_id") == "ML03:2023":
+        return InversionCase.model_validate(data)
     if data.get("family") == "text_evasion":
         return TextCase.model_validate(data)
     if data.get("owasp_id") == "ML02:2023" or data.get("family") == "poisoning":
@@ -226,7 +283,34 @@ def run_text_case(engine: ExperimentEngine, case: TextCase) -> dict[str, Any]:
     return _evaluate(case, undefended, defended)
 
 
+def run_inversion_case(engine: ExperimentEngine, case: InversionCase) -> dict[str, Any]:
+    lab = engine.inversion
+    undefended = lab.run_attack(InversionAttackRequest(scenario_id=case.scenario_id, model_id=case.model_id,
+                                                       seed=case.seed, attack=case.attack, targets=case.targets))
+    defended = None
+    if undefended.status == "completed" and case.defense is not None:
+        defended = lab.run_defend(InversionDefendRequest(parent_experiment_id=undefended.experiment_id,
+                                                         output_policy=case.defense))
+    result = _evaluate(case, undefended, defended)
+    if any(i.metric == "evidence_consistency" for i in case.invariants):
+        consistent = _completed(undefended) and (defended is None or _completed(defended))
+        details: dict[str, Any] = {}
+        if consistent:
+            details["verified"] = {r.experiment_id: engine.verify_full(r)["ok"] for r in (undefended, defended) if r}
+            details["replay_identical"] = engine.replay(undefended.experiment_id)["identical"]
+            consistent = all(details["verified"].values()) and details["replay_identical"]
+        for inv, res in zip(case.invariants, result["invariants"]):
+            if inv.metric == "evidence_consistency":
+                res["observed"] = 1.0 if consistent else 0.0
+                res["passed"] = _OPS[inv.op](res["observed"], inv.value)
+                res["details"] = details
+        result["passed"] = all(r["passed"] for r in result["invariants"])
+    return result
+
+
 def run_case(engine: ExperimentEngine, case: AnyCase) -> dict[str, Any]:
+    if isinstance(case, InversionCase):
+        return run_inversion_case(engine, case)
     if isinstance(case, TextCase):
         return run_text_case(engine, case)
     if isinstance(case, PoisoningCase):

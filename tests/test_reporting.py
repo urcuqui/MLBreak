@@ -5,6 +5,8 @@ import json
 import pytest
 
 from mlbreak.experiments import ExperimentEngine
+from mlbreak.inversion.schemas import (InversionAttackRequest, InversionBaselineRequest, InversionDefendRequest,
+                                       InversionRecord, LabelOnly, TargetSelection)
 from mlbreak.poisoning.schemas import (LabelFlipConfig, PoisonAttackRequest, PoisonBaselineRequest,
                                        PoisonDefendRequest, PoisoningRecord)
 from mlbreak.reporting import SECTIONS, SEMANTIC_DISCLAIMER
@@ -20,6 +22,7 @@ def records(engine: ExperimentEngine):
     t = engine.text.run_attack(TextAttackRequest(samples=TextSampleSelection(max_samples=20)))
     p = engine.poisoning.run_attack(PoisonAttackRequest(poison=LabelFlipConfig(strategy="targeted", fraction=0.1,
                                                                                   target_class=1, selection="boundary")))
+    i = engine.inversion.run_attack(InversionAttackRequest(targets=TargetSelection(max_targets=30)))
     return {
         "2d-baseline": engine.run_baseline(BaselineRequest()),
         "2d-attack": a,
@@ -31,6 +34,10 @@ def records(engine: ExperimentEngine):
         "ml02-baseline": engine.poisoning.run_baseline(PoisonBaselineRequest()),
         "ml02-attack": p,
         "ml02-replay": engine.poisoning.run_defend(PoisonDefendRequest(parent_experiment_id=p.experiment_id)),
+        "ml03-baseline": engine.inversion.run_baseline(InversionBaselineRequest(targets=TargetSelection(max_targets=30))),
+        "ml03-attack": i,
+        "ml03-adaptive": engine.inversion.run_defend(InversionDefendRequest(parent_experiment_id=i.experiment_id,
+                                                                            output_policy=LabelOnly())),
     }
 
 
@@ -58,6 +65,11 @@ def test_reports_state_scenario_threat_model_and_limitations(engine, records):
     for k in ("spam-attack", "spam-replay"):
         assert md[k].count(SEMANTIC_DISCLAIMER) >= 2, k      # next to the messages AND in the limitations
     assert SEMANTIC_DISCLAIMER not in md["2d-attack"]
+    assert "prediction service → output consumer" in md["ml03-attack"]
+    assert "MLB-REG-016" in md["ml03-adaptive"] and "not a formal privacy guarantee" in md["ml03-adaptive"]
+    for k in ("ml03-attack", "ml03-adaptive"):
+        assert "Reconstruction accuracy alone is not evidence of model-induced leakage" in md[k], k
+        assert "leakage claimed" in md[k] or "leakage NOT claimed" in md[k], k
 
 
 def test_live_report_reveals_tampering_that_the_snapshot_hides(engine, store, records):
@@ -103,6 +115,11 @@ PINNED_FIELDS = {
                         "target_system", "dataset", "seed", "attack_config", "defense_config", "parent_experiment_id",
                         "replay_of", "lineage", "request", "metrics", "samples", "test_predictions",
                         "reproducibility", "duration_ms"},
+    InversionRecord: {"schema_version", "family", "experiment_id", "created_at", "mode", "evaluation", "status",
+                      "error", "intentionally_vulnerable", "scenario_id", "owasp", "attacker_capabilities", "model",
+                      "auxiliary_model", "target_system", "dataset", "seed", "output_policy", "attack_config",
+                      "defense_config", "target_selection", "parent_experiment_id", "replay_of", "lineage", "request",
+                      "metrics", "targets", "service", "reproducibility", "duration_ms"},
 }
 
 

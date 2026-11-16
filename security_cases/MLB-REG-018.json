@@ -1,0 +1,65 @@
+{
+  "id": "MLB-REG-018",
+  "family": "inversion",
+  "title": "Query budget and reconstruction evidence stay consistent and reproducible",
+  "owasp_id": "ML03:2023",
+  "model_id": "logreg",
+  "seed": 7,
+  "attack": {
+    "attack": "candidate_matching",
+    "query_budget": 1,
+    "tie_policy": "abstain"
+  },
+  "defense": {
+    "kind": "label_only"
+  },
+  "defended_evaluation": "adaptive",
+  "invariants": [
+    {
+      "id": "budget-enforced",
+      "kind": "security",
+      "posture": "undefended",
+      "metric": "query_budget_utilisation",
+      "op": "<=",
+      "value": 1.0,
+      "description": "No target may use more than its 1-query budget (observed 200/200 queries = 100% utilisation)."
+    },
+    {
+      "id": "budget-binds",
+      "kind": "attack_canary",
+      "posture": "undefended",
+      "metric": "budget_exhaustion_rate",
+      "op": ">=",
+      "value": 0.5,
+      "description": "With one query per target, most targets must stay unresolved (observed 138/200 = 69.0%), so the budget visibly limits the attack."
+    },
+    {
+      "id": "abstention-not-counted",
+      "kind": "security",
+      "posture": "undefended",
+      "metric": "attribute_inference_accuracy",
+      "op": "<=",
+      "value": 0.4,
+      "description": "Abstentions are never counted as correct: accuracy comes from eliminations only (observed 62/200 = 31.0%), not from the 69% the prior would have guessed."
+    },
+    {
+      "id": "evidence-consistent",
+      "kind": "security",
+      "posture": "undefended",
+      "metric": "evidence_consistency",
+      "op": "==",
+      "value": 1.0,
+      "description": "Both records must pass integrity + lineage verification (every decision re-derived from its stored queries) and the attack must replay bit-identically."
+    },
+    {
+      "id": "defended-budget-enforced",
+      "kind": "security",
+      "posture": "defended",
+      "metric": "query_budget_utilisation",
+      "op": "<=",
+      "value": 1.0,
+      "description": "The adaptive attack against label-only output keeps the same 1-query budget."
+    }
+  ],
+  "rationale": "Budget accounting, abstention semantics and the stored reconstruction evidence must agree and reproduce exactly; this is what makes the other ML03 numbers checkable."
+}

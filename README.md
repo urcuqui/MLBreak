@@ -14,7 +14,8 @@ regression-testing traditional ML models — organised around the
 |---|---|
 | **ML01:2023 Input Manipulation Attack** | ✅ implemented, **two scenarios**: 2-D classifier evasion, and spam-filter evasion with character-level adversarial text |
 | **ML02:2023 Data Poisoning Attack** | ✅ implemented: label flipping with retraining, kNN label sanitisation |
-| ML03–ML10:2023 | registry metadata only. **No lab, no placeholder attacks.** |
+| **ML03:2023 Model Inversion Attack** | ✅ implemented: private-attribute inversion of a risk-scoring service, compared with an auxiliary-only attacker; quantised and label-only output policies |
+| ML04–ML10:2023 | registry metadata only. **No lab, no placeholder attacks.** |
 
 The first release is a working vertical slice, not a scaffold. Every metric in the UI, CLI and
 reports comes from an experiment that actually ran.
@@ -25,7 +26,7 @@ reports comes from an experiment that actually ran.
 make install && make ui     # Python venv + dependencies, then build the web UI (needs Node 18+)
 make run                    # http://127.0.0.1:8000 — UI and API (API docs at /docs)
 make test && make verify    # test suite, then the security regression gate
-make demo                   # all three labs end to end from the CLI
+make demo                   # all four labs end to end from the CLI
 docker compose up --build   # alternative: everything in a hardened container on 127.0.0.1:8000
 ```
 
@@ -40,6 +41,7 @@ Running `npm` in the repository root fails with `ENOENT … package.json`.
 | **2D Classifier Evasion** | ML01:2023 | FGSM, PGD (white-box), random search (black-box) | adversarial training, confidence rejection | MLB-REG-001…004 | [methodology](docs/methodology.md) |
 | **Spam Filter Evasion** | ML01:2023 | DeepWordBug-style character edits (black-box), under text-preservation constraints | text normalisation, adversarial data augmentation | MLB-REG-009…013 | [ml01-spam-filter-evasion](docs/ml01-spam-filter-evasion.md) |
 | **Label-Flipping Poisoning** | ML02:2023 | random / targeted label flipping + retraining | kNN label sanitisation (replay only — no adaptive poisoner) | MLB-REG-005…008 | [ml02-data-poisoning](docs/ml02-data-poisoning.md) |
+| **Private Attribute Inversion** | ML03:2023 | black-box candidate matching (bounded queries), vs an auxiliary-only attacker | quantised probability, label-only output (adaptive only — replay does not apply) | MLB-REG-014…018 | [ml03-model-inversion](docs/ml03-model-inversion.md) |
 
 Every lab follows the same four steps in the UI — **Baseline → Attack → Defend → Evidence & replay** — with the
 same actions (*Run baseline*, *Replay against defense*, *Run adaptive attack*, *Verify*, *Replay*) and the same
@@ -142,6 +144,29 @@ inputs ([docs/ml02-data-poisoning.md](docs/ml02-data-poisoning.md)):
 | targeted class 1, 10%, **boundary rows** | **23.9%** (17/71) | **0/35** | 22.5% |
 | targeted class 1, 20%, random rows | **47.9%** (34/71) | 28/70 | **52.1%** (worse) |
 
+### ML03 · Private Attribute Inversion
+
+A fictional account-risk service (logistic regression on **synthetic** records) takes four public features and a
+confidential binary attribute as inputs ([docs/ml03-model-inversion.md](docs/ml03-model-inversion.md)):
+
+1. **Baseline**: victim utility, how much the attribute matters to the prediction, and an **auxiliary-only
+   attacker** that guesses the attribute from public data alone (no queries).
+2. **Attack**: knowing a held-out target's public features and the service's output for that record, the attacker
+   queries the black-box service with s = 0 and s = 1 and keeps the candidate that reproduces the observed output.
+   The attack code only ever sees an attacker view and a counting oracle; ground truth stays with the evaluator.
+   The UI shows each step of the trace and which information the adversary had.
+3. **Defend**: a NEW adaptive inversion against a quantised or label-only output policy, on the same targets,
+   with a privacy–utility comparison.
+
+| Seed 7, 200 targets | Correct reconstructions | Advantage over auxiliary-only (138/200) | Ranking AUC of released output |
+|---|---|---|---|
+| full probability | 200/200 | +31.0 pts, leakage claimed (p = 2e-19) | 0.839 |
+| 4-bucket quantisation | 193/200 | +27.5 pts, claimed | 0.820 |
+| label only | 168/200 | +15.0 pts, claimed (p = 9e-10) | 0.753 |
+| negative control (model ignores the attribute) | 138/200 | 0, **not** claimed | 0.798 |
+
+High accuracy alone is never reported as leakage; output restriction is not a formal privacy guarantee.
+
 ## Architecture
 
 ```mermaid
@@ -170,6 +195,7 @@ flowchart LR
 | `src/mlbreak/api.py`, `cli.py` | Web API and command line |
 | `src/mlbreak/text/` | ML01 spam-filter evasion: bundled corpus, TF-IDF models, DeepWordBug-style attack, normalisation, augmentation, metrics, integrity |
 | `src/mlbreak/poisoning/` | ML02 data poisoning: label flipping, kNN sanitisation, metrics, integrity |
+| `src/mlbreak/inversion/` | ML03 model inversion: synthetic data, victim/auxiliary models, prediction service and output policies, attacker-side candidate matching, metrics, integrity |
 | `frontend/` | React + TypeScript UI |
 | `security_cases/` | Declared defensive invariants |
 
@@ -221,9 +247,10 @@ UI development with hot reload: `make run` in one shell, `make dev` in another (
 ```bash
 make test           # pytest: unit + integration + API + regression + static security checks
 make verify         # security regression gate, non-zero exit on failure
-make demo           # all labs: ML01 2-D (baseline → attack → replay/adaptive → black-box → exact replay), ML01 spam, ML02
+make demo           # all labs: ML01 2-D (baseline → attack → replay/adaptive → black-box → exact replay), ML01 spam, ML02, ML03
 PYTHONPATH=src .venv/bin/python -m mlbreak demo --lab ml01-spam   # ML01 spam filter: attack → replay/adaptive per defense
 PYTHONPATH=src .venv/bin/python -m mlbreak demo --lab ml02   # ML02: clean → poison → defensive replay → replay
+PYTHONPATH=src .venv/bin/python -m mlbreak demo --lab ml03   # ML03: baseline → inversion → output policies → negative control → replay
 PYTHONPATH=src .venv/bin/python -m mlbreak demo --lab all
 ```
 
@@ -268,7 +295,7 @@ Evidence is written to `var/experiments/` (override with `MLBREAK_DATA_DIR`).
 
 ## Data and licensing
 
-* **Datasets:** `moons-v1` is generated at runtime; the **SMS Spam Collection v.1** (Almeida & Gómez Hidalgo,
+* **Datasets:** `moons-v1` and `synthetic-account-risk-v1` (ML03, fictional records) are generated at runtime; the **SMS Spam Collection v.1** (Almeida & Gómez Hidalgo,
   UCI, DOI 10.24432/C5CC84) is bundled under **CC BY 4.0** with its attribution
   ([docs/datasets.md](docs/datasets.md)). Nothing is downloaded at runtime.
 * **Software license: not yet chosen.** There is no `LICENSE` file, so the code is under default copyright and
@@ -280,6 +307,7 @@ Evidence is written to `var/experiments/` (override with `MLBREAK_DATA_DIR`).
 
 * [ML01 spam-filter evasion: reference analysis, threat model, constraints, defenses, limitations](docs/ml01-spam-filter-evasion.md)
 * [ML02 data poisoning: threat model, metrics, assumptions, limitations](docs/ml02-data-poisoning.md)
+* [ML03 model inversion: threat model, attack, baseline comparison, output policies, privacy–utility, limitations](docs/ml03-model-inversion.md)
 * [Threat model](docs/threat-model.md)
 * [Experimental methodology](docs/methodology.md)
 * [OWASP mapping](docs/owasp-mapping.md)

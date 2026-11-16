@@ -91,6 +91,20 @@ SCENARIOS: dict[str, Scenario] = {
             "characters within explicit edit-distance and text-preservation constraints."
         ),
     ),
+    "ml03-private-attribute-inversion": Scenario(
+        scenario_id="ml03-private-attribute-inversion",
+        title="Private-attribute inversion of a risk-scoring service",
+        owasp_id="ML03:2023",
+        dataset_id="synthetic-account-risk-v1",
+        intentionally_vulnerable=True,
+        description=(
+            "A fictional account-risk service (logistic regression on synthetic records) uses a confidential "
+            "binary attribute as an input. Knowing a target's public features and the service's output for that "
+            "record, a black-box attacker queries candidate records to reconstruct the attribute; the result is "
+            "compared with an auxiliary-only attacker, and output policies (quantised, label-only) are evaluated "
+            "with new adaptive attacks."
+        ),
+    ),
     "ml02-moons-label-flip": Scenario(
         scenario_id="ml02-moons-label-flip",
         title="Label-flipping poisoning of the training set, with retraining",
@@ -107,7 +121,7 @@ SCENARIOS: dict[str, Scenario] = {
 
 
 def verify_any_record(rec) -> dict[str, Any]:
-    """Record-level integrity check, dispatched on the record family (ML01 2-D, ML01 text, ML02)."""
+    """Record-level integrity check, dispatched on the record family (ML01 2-D, ML01 text, ML02, ML03)."""
     family = getattr(rec, "family", None)
     if family == "text_evasion":
         from .text.integrity import verify_text_record
@@ -115,6 +129,9 @@ def verify_any_record(rec) -> dict[str, Any]:
     if family == "poisoning":
         from .poisoning.integrity import verify_poisoning_record
         return verify_poisoning_record(rec)
+    if family == "inversion":
+        from .inversion.integrity import verify_inversion_record
+        return verify_inversion_record(rec)
     return verify_record(rec)
 
 
@@ -284,6 +301,9 @@ class ExperimentEngine:
         # ML01 spam-filter (text) evasion: same gate/deadline/store; own records and metrics.
         from .text.engine import TextLab
         self.text = TextLab(self)
+        # ML03 model inversion (private-attribute reconstruction): same gate/deadline/store; own records and metrics.
+        from .inversion.engine import InversionLab
+        self.inversion = InversionLab(self)
 
     # ------------------------------------------------------------------ API
     def run_baseline(self, req: BaselineRequest, replay_of: str | None = None) -> ExperimentRecord:
@@ -371,6 +391,8 @@ class ExperimentEngine:
         original = self.store.load(experiment_id)
         if getattr(original, "family", None) == "text_evasion":  # ML01 spam-filter evasion
             return self.text.replay(original)
+        if getattr(original, "family", None) == "inversion":  # ML03 model inversion
+            return self.inversion.replay(original)
         if not isinstance(original, ExperimentRecord):  # ML02 poisoning record
             return self.poisoning.replay(original)
         if original.status != "completed":

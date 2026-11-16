@@ -1,4 +1,4 @@
-"""Shared structure for every experiment report (ML01 2-D, ML01 spam filter, ML02 poisoning).
+"""Shared structure for every experiment report (ML01 2-D, ML01 spam filter, ML02 poisoning, ML03 inversion).
 
 Every report has the same seven sections, in this order, so evidence reads the same across laboratories:
 
@@ -50,7 +50,21 @@ THREAT_MODELS: dict[str, dict[str, str]] = {
                         "optimises against the sanitiser",
         "details": "docs/ml02-data-poisoning.md#2-threat-model",
     },
+    "ml03-private-attribute-inversion": {
+        "asset": "confidentiality of a private binary attribute of one record processed by the prediction service",
+        "trust boundary": "prediction service → output consumer (released outputs and crafted-record queries are "
+                          "visible to the attacker; the record's private attribute, the model and its training data "
+                          "are not)",
+        "attacker goal": "reconstruct the target record's private attribute better than an auxiliary-only attacker",
+        "out of scope": "membership inference (ML04), model extraction (ML05), reconstruction of training records, "
+                        "imperfect knowledge of public features, formal privacy guarantees",
+        "details": "docs/ml03-model-inversion.md#2-threat-model",
+    },
 }
+
+INVERSION_DISCLAIMER = ("Reconstruction accuracy alone is not evidence of model-induced leakage: the private attribute "
+                        "is partly predictable from public data, so only the advantage over the auxiliary-only attacker "
+                        "on the same targets (with its paired test) is attributed to the model's outputs.")
 
 SEMANTIC_DISCLAIMER = ("A constraint-valid adversarial message is NOT proof that its meaning is preserved: edit "
                        "distance, character/word ratios and protected tokens are proxies; no human or semantic "
@@ -107,7 +121,23 @@ def limitations(rec) -> list[str]:
     if scen == "ml02-moons-label-flip" and ev == "poisoning":
         out.append("Only label flipping is modelled; no adaptive poisoner (one who anticipates the sanitiser) is "
                    "implemented.")
-    if not kind and ev in ("clean", "attack", "clean_training", "poisoning"):
+    if scen == "ml03-private-attribute-inversion":
+        if ev != "clean":
+            out.append(INVERSION_DISCLAIMER)
+            out.append("The attack assumes a deterministic service and EXACT knowledge of the target's public features; "
+                       "both make full-probability reconstruction near-certain. Noisy auxiliary knowledge, non-binary "
+                       "attributes and stochastic services are not modelled.")
+        if kind in ("quantized_probability", "label_only"):
+            out.append("Output restriction is not a formal privacy guarantee. Label-only output still leaks the "
+                       "attribute for records near the decision boundary (MLB-REG-016), and coarse quantisation only "
+                       "reduces leakage when the bucket width approaches the attribute's effect on the score "
+                       "(MLB-REG-015). No differential-privacy mechanism is implemented.")
+        if ev == "adaptive_inversion":
+            out.append("The adaptive attacker is one strategy (candidate matching with an auxiliary prior); its accuracy "
+                       "is a lower bound for this policy.")
+        out.append("Targets are held-out records (not training members); results do not cover reconstruction of "
+                   "training data or membership.")
+    if not kind and ev in ("clean", "attack", "clean_training", "poisoning", "inversion"):
         out.append("No defense was evaluated in this experiment.")
     return out
 

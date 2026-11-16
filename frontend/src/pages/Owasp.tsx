@@ -8,6 +8,7 @@ const SCENARIO_LINKS: Record<string, { to: string; label: string }> = {
   "ml01-moons-evasion": { to: "/lab/ml01/baseline", label: "2D Classifier Evasion" },
   "ml01-spam-filter-evasion": { to: "/lab/ml01/spam/baseline", label: "Spam Filter Evasion" },
   "ml02-moons-label-flip": { to: "/lab/ml02/baseline", label: "Label-flipping poisoning" },
+  "ml03-private-attribute-inversion": { to: "/lab/ml03/baseline", label: "Private attribute inversion" },
 };
 
 export function Owasp() {

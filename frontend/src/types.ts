@@ -58,7 +58,9 @@ export interface ExperimentSummary {
   scenario_id: string; owasp_id: string; model_id: string; attack: string | null; epsilon: number | null;
   norm: string | null; defense: string | null; n_samples: number; clean_accuracy: number | null;
   attack_success_rate: number | null; attack_success: string | null; parent_experiment_id: string | null;
-  replay_of: string | null; error: string | null; family?: "evasion" | "poisoning" | "text_evasion";
+  replay_of: string | null; error: string | null; family?: "evasion" | "poisoning" | "text_evasion" | "inversion";
+  output_policy?: string | null; attribute_inference_accuracy?: number | null; baseline_inference_accuracy?: number | null;
+  inference_advantage?: number | null;
   max_edit_distance?: number | null; query_budget?: number | null;
   poison_fraction?: number | null; target_class?: number | null;
 }
@@ -198,6 +200,12 @@ export interface PoisoningCase {
   defended_evaluation: "replay"; invariants: Invariant[]; rationale: string;
 }
 
+export interface InversionCase {
+  id: string; family: "inversion"; title: string; owasp_id: string; model_id: string; seed: number;
+  attack: InversionAttackConfig; targets: TargetSelection; defense: RestrictivePolicy | null;
+  defended_evaluation: "adaptive" | "none"; invariants: Invariant[]; rationale: string;
+}
+
 export interface VerifyReport {
   experiment_id: string; ok: boolean; guarantee: string;
   checks: { check: string; status: "pass" | "fail" | "skipped"; detail: string }[];
@@ -269,4 +277,60 @@ export interface TextMessage { test_index: number; text: string; y_true: number;
 
 export interface ClassifyResult {
   text: string; normalized_text: string | null; p_spam: number; p_ham: number; prediction: number; label: string;
+}
+
+// ---------------------------------------------------------------------------
+// ML03 model inversion (private-attribute reconstruction)
+// ---------------------------------------------------------------------------
+export type InversionModelId = "logreg" | "logreg-public-only";
+export type OutputPolicy =
+  | { kind: "full_probability" }
+  | { kind: "quantized_probability"; bins: number }
+  | { kind: "label_only" };
+export type RestrictivePolicy = Exclude<OutputPolicy, { kind: "full_probability" }>;
+export interface InversionAttackConfig {
+  attack: "candidate_matching"; query_budget: number; tie_policy: "auxiliary_prior" | "abstain"; tolerance: number;
+}
+export interface TargetSelection { max_targets: number; order: "first" | "random"; indices?: number[] | null }
+export interface CandidateQuery { query_index: number; candidate: number; response: number; distance: number }
+export interface InversionTrace {
+  public_features: number[]; observed_output: number; candidate_domain: number[]; auxiliary_p1: number;
+  queries: CandidateQuery[]; n_queries: number; query_budget: number; budget_exhausted: boolean;
+  consistent_candidates: number[]; ambiguous: boolean;
+  rule: "unique_match" | "elimination" | "tie_auxiliary_prior" | "tie_abstain" | "no_consistent_candidate";
+  inferred: number | null; separation: number | null;
+}
+export interface InversionTarget {
+  target_index: number; auxiliary_p1: number; baseline_inferred: number; baseline_correct: boolean;
+  ground_truth: { private_attribute: number; target_label: number };
+  trace: InversionTrace | null; inversion_correct: boolean | null; undefended_inversion_correct: boolean | null;
+}
+export interface MeanMetric { value: number | null; n: number; definition: string; population?: string }
+export interface InversionMetrics {
+  n_targets: number;
+  [key: string]: unknown;
+}
+export interface InversionRecord {
+  schema_version: string; family: "inversion"; experiment_id: string; created_at: string;
+  mode: "baseline" | "attack" | "defend"; evaluation: "clean" | "inversion" | "adaptive_inversion";
+  status: "completed" | "failed"; error: string | null; intentionally_vulnerable: boolean; scenario_id: string;
+  owasp: { id: string; name: string; taxonomy: string; taxonomy_version: string; reference_url: string };
+  attacker_capabilities: Record<string, unknown> | null;
+  model: { model_id: string; artifact_sha256: string; estimator: string; features: string[]; private_attribute_weight?: number };
+  auxiliary_model: { artifact_sha256: string; training: string } | null;
+  target_system: { model_artifact_sha256: string | null; output_policy: OutputPolicy & { releases: string } };
+  dataset: Record<string, unknown> & { dataset_id: string; split_id: string; train_sha256: string; test_sha256: string;
+    auxiliary_sha256: string; public_features: string[]; private_attribute: string; target_label: string };
+  seed: number; output_policy: OutputPolicy; attack_config: InversionAttackConfig | null;
+  defense_config: RestrictivePolicy | null; target_selection: TargetSelection;
+  parent_experiment_id: string | null; replay_of: string | null;
+  lineage: { relation: string; parent_experiment_id: string; checks_passed: string[] } | null;
+  metrics: InversionMetrics; targets: InversionTarget[];
+  service: { eval_index: number; y_true: number; p_full: number; released: number; decision: number; consumer_decision: number }[];
+  reproducibility: Record<string, unknown>; duration_ms: number;
+}
+export interface InversionTargetsView {
+  model_id: string; seed: number; output_policy: OutputPolicy & { releases: string };
+  public_features: string[]; private_attribute: { name: string; domain: number[]; value: "hidden" };
+  targets: { target_index: number; public_features: number[]; observed_output: number }[];
 }

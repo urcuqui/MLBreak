@@ -52,12 +52,18 @@ jobs:
         run: >
           docker run -d --name mlbreak -p 127.0.0.1:8000:8000 --read-only --tmpfs /tmp --tmpfs /data:uid=10001
           --cap-drop ALL --security-opt no-new-privileges:true mlbreak:ci
-      - name: Smoke test (health, UI, bundled spam model)
+      - name: Smoke test (health, UI, bundled spam model, ML03 attacker view + inversion experiment)
         run: |
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/api/health && break; sleep 1; done
           curl -sf -o /dev/null http://127.0.0.1:8000/lab/ml01/spam/baseline
+          curl -sf -o /dev/null http://127.0.0.1:8000/lab/ml03/baseline
           curl -sf -X POST -H 'Content-Type: application/json' -d '{"text": "WINNER! Claim your prize, call 09061701461"}' \
             http://127.0.0.1:8000/api/text/classify | grep -q '"label"'
+          curl -sf -X POST -H 'Content-Type: application/json' -d '{"targets": {"max_targets": 3}}' \
+            http://127.0.0.1:8000/api/inversion/targets | grep -q '"value":"hidden"'
+          ID=$(curl -sf -X POST -H 'Content-Type: application/json' -d '{"targets": {"max_targets": 20}}' \
+            http://127.0.0.1:8000/api/experiments/inversion/attack | python3 -c 'import json,sys; print(json.load(sys.stdin)["experiment_id"])')
+          curl -sf http://127.0.0.1:8000/api/experiments/$ID/verify | grep -q '"ok":true'
       - name: Container logs
         if: ${{ always() }}
         run: docker logs mlbreak || true

@@ -24,6 +24,8 @@ from .experiments import SCENARIOS, EngineBusy, EvidenceIntegrityError, Experime
 from .models import MODELS
 from .owasp import CATEGORIES, TAXONOMY_NAME, TAXONOMY_URL, TAXONOMY_VERSION
 from .regression import load_cases, run_suite
+from .inversion.schemas import (InversionAttackRequest, InversionBaselineRequest, InversionDefendRequest,
+                                InversionQueryRequest, InversionTargetsRequest)
 from .poisoning.schemas import PoisonAttackRequest, PoisonBaselineRequest, PoisonDefendRequest
 from .text.schemas import (ModelId as TextModelId, TextAttackRequest, TextBaselineRequest, TextClassifyRequest,
                            TextDefendRequest)
@@ -57,12 +59,14 @@ OPENAPI_TAGS = [
     {"name": "ml01-2d", "description": "ML01 Input Manipulation — 2-D classifier evasion (baseline, attack, defend)."},
     {"name": "ml01-spam", "description": "ML01 Input Manipulation — spam-filter evasion with character-level text."},
     {"name": "ml02", "description": "ML02 Data Poisoning — label flipping and kNN label sanitisation."},
+    {"name": "ml03", "description": "ML03 Model Inversion — private-attribute reconstruction and output policies."},
     {"name": "evidence", "description": "Stored experiments of every lab: list, read, verify, replay, export."},
     {"name": "regression", "description": "Security regression cases and gate."},
     {"name": "ui", "description": "Dashboard data for the web UI."},
 ]
 
 _TAG_RULES = (  # first matching prefix wins
+    ("/api/experiments/inversion/", "ml03"), ("/api/inversion/", "ml03"),
     ("/api/experiments/poisoning/", "ml02"), ("/api/experiments/text/", "ml01-spam"), ("/api/text/", "ml01-spam"),
     ("/api/experiments/{experiment_id}/boundary", "ml02"),
     ("/api/experiments/baseline", "ml01-2d"), ("/api/experiments/attack", "ml01-2d"),
@@ -204,6 +208,29 @@ def create_app(root: Path | None = None, cases: Path | None = None,
                       limit: int = Query(100, ge=1, le=LIMITS.max_text_samples)):
         """Held-out test messages with the undefended filter's predictions (to choose what to attack)."""
         return engine.text.test_messages(model_id, seed, label, limit)
+
+    # ---------------------------------------------------- ML03 model inversion
+    @app.post("/api/experiments/inversion/baseline")
+    def inversion_baseline(req: InversionBaselineRequest):
+        return engine.inversion.run_baseline(req).model_dump(mode="json")
+
+    @app.post("/api/experiments/inversion/attack")
+    def inversion_attack(req: InversionAttackRequest):
+        return engine.inversion.run_attack(req).model_dump(mode="json")
+
+    @app.post("/api/experiments/inversion/defend")
+    def inversion_defend(req: InversionDefendRequest):
+        return engine.inversion.run_defend(req).model_dump(mode="json")
+
+    @app.post("/api/inversion/targets")
+    def inversion_targets(req: InversionTargetsRequest):
+        """Attacker-facing: public features + released output of the selected targets. No private attribute."""
+        return engine.inversion.targets_view(req)
+
+    @app.post("/api/inversion/query")
+    def inversion_query(req: InversionQueryRequest):
+        """One black-box query of the prediction service with a full (possibly crafted) record. Not stored."""
+        return engine.inversion.query(req)
 
     @app.get("/api/experiments/{experiment_id}/boundary")
     def experiment_boundary(experiment_id: str,

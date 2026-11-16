@@ -19,6 +19,7 @@ export function Dashboard() {
         <div className="row gap wrap">
           <Link className="btn primary" to="/lab/ml01/baseline">ML01 evasion lab →</Link>
           <Link className="btn primary" to="/lab/ml02/baseline">ML02 poisoning lab →</Link>
+          <Link className="btn primary" to="/lab/ml03/baseline">ML03 inversion lab →</Link>
         </div>
       </div>
       <VulnerableBanner />

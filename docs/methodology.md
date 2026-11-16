@@ -188,3 +188,20 @@ Every text case also asserts `constraint_violation_rate ≤ 0`: no recorded evas
 
 The ML02 methodology (threat model, metrics, evaluation assumptions) is in
 [ml02-data-poisoning.md](ml02-data-poisoning.md).
+
+ML03 cases (`family: inversion`, `owasp_id: ML03:2023`) use the same invariant kinds with ML03 semantics:
+*undefended* is the inversion against the full-probability service, *defended* a NEW adaptive inversion against
+an output policy (or `defended_evaluation: none` for cases without one), and *paired* statistics compare the
+per-target **correctness of the reconstruction** (not an evasion success), so they must name
+`attribute_inference_accuracy`. `evidence_consistency` is computed by the runner (1.0 iff both records verify and
+the attack replays bit-identically).
+
+| Case | Invariant |
+|---|---|
+| MLB-REG-014 | inversion gains measurable information over the auxiliary-only baseline (paired McNemar) |
+| MLB-REG-015 | 4-bucket quantisation reduces reconstructions but leakage remains significant (significance of the reduction NOT asserted: 7/20 seeds) |
+| MLB-REG-016 | label-only output significantly reduces reconstructions, but still leaks (advantage ≥ 10 pts) |
+| MLB-REG-017 | negative control: zero advantage and no leakage claim when the model ignores the attribute |
+| MLB-REG-018 | 1-query budget enforced, abstentions not counted, evidence verifies and replays exactly |
+
+Details: [ml03-model-inversion.md](ml03-model-inversion.md#9-regression-cases).

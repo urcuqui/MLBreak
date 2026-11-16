@@ -1,0 +1,52 @@
+{
+  "id": "MLB-REG-016",
+  "family": "inversion",
+  "title": "Label-only output limits score information but does not eliminate leakage",
+  "owasp_id": "ML03:2023",
+  "model_id": "logreg",
+  "seed": 7,
+  "defense": {
+    "kind": "label_only"
+  },
+  "defended_evaluation": "adaptive",
+  "invariants": [
+    {
+      "id": "reduction-significant",
+      "kind": "security",
+      "posture": "paired",
+      "statistic": "mcnemar_p_value",
+      "metric": "attribute_inference_accuracy",
+      "op": "<=",
+      "value": 0.001,
+      "description": "Label-only output must reduce correct reconstructions significantly on the same targets (observed 200 → 168 of 200, McNemar p = 2.3e-10; 20-seed max 1.5e-5)."
+    },
+    {
+      "id": "score-information-limited",
+      "kind": "security",
+      "posture": "defended",
+      "metric": "ambiguity_rate",
+      "op": ">=",
+      "value": 0.3,
+      "description": "At least 30% of targets must become ambiguous without a score (observed 104/200 = 52.0%)."
+    },
+    {
+      "id": "leakage-not-eliminated",
+      "kind": "attack_canary",
+      "posture": "defended",
+      "metric": "inference_advantage",
+      "op": ">=",
+      "value": 0.1,
+      "description": "A NEW attack against label-only output must still beat the auxiliary-only attacker by ≥ 10 points (observed +30/200 = +15.0%; 20-seed range +14.0 to +23.5 points): records near the decision boundary still leak."
+    },
+    {
+      "id": "leakage-still-significant",
+      "kind": "attack_canary",
+      "posture": "defended",
+      "metric": "leakage_p_value",
+      "op": "<=",
+      "value": 0.001,
+      "description": "Leakage under label-only output must remain significant (observed p = 9.3e-10; 20-seed max 3.7e-9)."
+    }
+  ],
+  "rationale": "Removing the score removes most of the signal, but whenever the private attribute flips the decision the label alone reveals it. Label-only output is a mitigation, not a guarantee."
+}

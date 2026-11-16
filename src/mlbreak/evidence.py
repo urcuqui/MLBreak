@@ -11,11 +11,12 @@ from typing import Any
 
 import pandas as pd
 
+from .inversion.schemas import InversionRecord
 from .poisoning.schemas import PoisoningRecord
 from .text.schemas import TextEvasionRecord
 from .schemas import EXPERIMENT_ID_PATTERN, ExperimentRecord
 
-AnyRecord = ExperimentRecord | PoisoningRecord | TextEvasionRecord
+AnyRecord = ExperimentRecord | PoisoningRecord | TextEvasionRecord | InversionRecord
 
 
 def parse_record(data: dict[str, Any]) -> AnyRecord:
@@ -24,6 +25,8 @@ def parse_record(data: dict[str, Any]) -> AnyRecord:
         return TextEvasionRecord.model_validate(data)
     if data.get("family") == "poisoning" or str(data.get("schema_version", "")).startswith("mlbreak.poisoning/"):
         return PoisoningRecord.model_validate(data)
+    if data.get("family") == "inversion" or str(data.get("schema_version", "")).startswith("mlbreak.inversion/"):
+        return InversionRecord.model_validate(data)
     return ExperimentRecord.model_validate(data)
 
 _ID_RE = re.compile(EXPERIMENT_ID_PATTERN)
@@ -80,6 +83,8 @@ class EvidenceStore:
             return poisoning_csv(rec)
         if isinstance(rec, TextEvasionRecord):
             return text_csv(rec)
+        if isinstance(rec, InversionRecord):
+            return inversion_csv(rec)
         rows = []
         for s in rec.samples:
             row = s.model_dump()
@@ -131,6 +136,27 @@ def text_csv(rec: TextEvasionRecord) -> str:
     return buf.getvalue()
 
 
+def inversion_csv(rec: InversionRecord) -> str:
+    """One row per target: attacker-side trace (queries, rule, inference) and evaluation-side ground truth."""
+    rows = []
+    for t in rec.targets:
+        tr = t.trace
+        d = {"target_index": t.target_index, "auxiliary_p1": t.auxiliary_p1, "baseline_inferred": t.baseline_inferred,
+             "baseline_correct": t.baseline_correct, "true_private_attribute": t.ground_truth.private_attribute,
+             "true_label": t.ground_truth.target_label}
+        if tr is not None:
+            d.update({f"x_{j}": v for j, v in enumerate(tr.public_features)})
+            d.update(observed_output=tr.observed_output, n_queries=tr.n_queries, query_budget=tr.query_budget,
+                     queries="; ".join(f"s={q.candidate}->{q.response!r}" for q in tr.queries), rule=tr.rule,
+                     ambiguous=tr.ambiguous, budget_exhausted=tr.budget_exhausted, inferred=tr.inferred,
+                     inversion_correct=t.inversion_correct,
+                     undefended_inversion_correct=t.undefended_inversion_correct)
+        rows.append(d)
+    buf = io.StringIO()
+    pd.DataFrame(rows).to_csv(buf, index=False)
+    return buf.getvalue()
+
+
 def render_any(rec: AnyRecord, verification: dict | None = None) -> str:
     """Render the report of any record family with the shared seven-section structure.
 
@@ -140,6 +166,9 @@ def render_any(rec: AnyRecord, verification: dict | None = None) -> str:
     if isinstance(rec, TextEvasionRecord):
         from .text.report import render_text_markdown
         return render_text_markdown(rec, verification)
+    if isinstance(rec, InversionRecord):
+        from .inversion.report import render_inversion_markdown
+        return render_inversion_markdown(rec, verification)
     if isinstance(rec, PoisoningRecord):
         from .poisoning.report import render_poisoning_markdown
         return render_poisoning_markdown(rec, verification)
@@ -151,6 +180,8 @@ def summarize(rec: dict[str, Any]) -> dict[str, Any]:
         return _summarize_poisoning(rec)
     if rec.get("family") == "text_evasion":
         return _summarize_text(rec)
+    if rec.get("family") == "inversion":
+        return _summarize_inversion(rec)
     m = rec.get("metrics") or {}
     asr = m.get("attack_success_rate") or {}
     return {
@@ -198,6 +229,30 @@ def _summarize_text(rec: dict[str, Any]) -> dict[str, Any]:
         "robust_accuracy": None, "abstention_rate_adversarial": None,
         "attack_success_rate": asr.get("value"),
         "attack_success": f"{asr['numerator']}/{asr['denominator']}" if asr else None,
+        "parent_experiment_id": rec.get("parent_experiment_id"), "replay_of": rec.get("replay_of"),
+        "schema_version": rec.get("schema_version"), "error": rec.get("error"),
+    }
+
+
+def _summarize_inversion(rec: dict[str, Any]) -> dict[str, Any]:
+    m = rec.get("metrics") or {}
+    acc = m.get("attribute_inference_accuracy") or {}
+    ac = rec.get("attack_config") or {}
+    return {
+        "experiment_id": rec["experiment_id"], "created_at": rec["created_at"], "mode": rec["mode"],
+        "evaluation": rec["evaluation"], "status": rec["status"], "scenario_id": rec["scenario_id"],
+        "owasp_id": rec["owasp"]["id"], "family": "inversion", "model_id": rec["model"].get("model_id"),
+        "attack": f"candidate_matching:budget={ac['query_budget']}" if ac else None, "epsilon": None, "norm": None,
+        "output_policy": (rec.get("output_policy") or {}).get("kind"),
+        "defense": (rec.get("defense_config") or {}).get("kind"),
+        "n_samples": len(rec.get("targets") or []),
+        "clean_accuracy": (m.get("victim_prediction_accuracy") or {}).get("value"),
+        "adversarial_accuracy": None, "robust_accuracy": None, "abstention_rate_adversarial": None,
+        # ML03 has no evasion "attack success": the list shows attribute-inference accuracy and the advantage.
+        "attack_success_rate": None, "attack_success": None,
+        "attribute_inference_accuracy": acc.get("value"),
+        "baseline_inference_accuracy": (m.get("baseline_inference_accuracy") or {}).get("value"),
+        "inference_advantage": (m.get("inference_advantage") or {}).get("value"),
         "parent_experiment_id": rec.get("parent_experiment_id"), "replay_of": rec.get("replay_of"),
         "schema_version": rec.get("schema_version"), "error": rec.get("error"),
     }
