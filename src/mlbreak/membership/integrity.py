@@ -19,6 +19,18 @@ Beyond the shared fingerprints, verification re-derives, without re-running any 
 
 The shadow meta-classifier's scores cannot be re-derived without re-training it; they are covered by the results
 fingerprint and by exact replay.
+
+Cross-platform comparison rule. Re-derivation is EXACT for every field (counts, ratios, AUCs, ranks, z statistics,
+thresholds, flags, definitions, populations) except values that are outputs of a transcendental function from the
+platform's C math library, which is not correctly rounded and differs between platforms in the last bits:
+
+* the ``value`` of normal-approximation p-values (``*_leakage_p_value``, ``*_placebo_p_value``: ``0.5·erfc(z/√2)``);
+* threshold scores of the ``negative_log_likelihood`` signal (``log``).
+
+These are compared with a relative tolerance of :data:`LIBM_REL_TOL` (1e-12). Observed macOS-libm vs glibc
+differences are 1–2 ULP (relative ≈ 4e-16): four orders of magnitude below the tolerance, while any material edit is
+far above it. Their inputs (``z``) and every decision derived from them (``leakage_claimed``,
+``discrimination_claimed``, member decisions) are still compared exactly, so a claim cannot change silently.
 """
 
 from __future__ import annotations
@@ -27,6 +39,8 @@ from typing import Any
 
 import numpy as np
 
+import math
+
 from ..hashing import sha256_json
 from ..integrity import INTEGRITY_GUARANTEE, _check, record_sha256
 from .attacks import calibrate, class_keys, decide, signal
@@ -34,6 +48,32 @@ from .defenses import apply_policy, is_valid_output
 from .data import load_membership_dataset
 from .metrics import ATTACKS, derive_membership_metrics
 from .schemas import contract_of
+
+
+LIBM_REL_TOL = 1e-12  # see module docstring: platform libm outputs only
+_LIBM_P_VALUE_SUFFIXES = ("_leakage_p_value", "_placebo_p_value")
+
+
+def _libm_close(a, b) -> bool:
+    if a is None or b is None or isinstance(a, bool) or isinstance(b, bool):
+        return a == b
+    if a == b:
+        return True
+    return math.isfinite(a) and math.isfinite(b) and math.isclose(a, b, rel_tol=LIBM_REL_TOL, abs_tol=0.0)
+
+
+def metric_differences(stored: dict, derived: dict) -> list[str]:
+    """Paths where the stored metrics differ from the re-derived ones. Exact everywhere except the ``value`` of
+    normal-approximation p-value blocks (platform libm ``erfc``), compared with :data:`LIBM_REL_TOL`."""
+    out = []
+    for k in sorted(set(stored) | set(derived)):
+        a, b = stored.get(k), derived.get(k)
+        if k.endswith(_LIBM_P_VALUE_SUFFIXES) and isinstance(a, dict) and isinstance(b, dict) and set(a) == set(b):
+            out += [f"{k}.{f}: stored={a[f]!r} derived={b[f]!r}" for f in sorted(a)
+                    if not (_libm_close(a[f], b[f]) if f == "value" else a[f] == b[f])]
+        elif a != b:
+            out.append(k)
+    return out
 
 
 def _dump(x):
@@ -124,7 +164,8 @@ def candidate_errors(rec) -> list[str]:
         rel = np.array([o.released_output])
         s = float(signal(cfg["threshold_signal"], rel, lab)[0])
         key = int(class_keys(rel, lab)[0])
-        if s != c.threshold.score:
+        exact = cfg["threshold_signal"] != "negative_log_likelihood"  # log() comes from the platform libm
+        if (s != c.threshold.score) if exact else not _libm_close(s, c.threshold.score):
             errs.append(f"{c.candidate_id}: threshold score ≠ {cfg['threshold_signal']} of the released output")
         cond = cfg.get("threshold_mode") == "class_conditional"
         for a in ATTACKS:
@@ -213,9 +254,10 @@ def verify_membership_record(rec) -> dict[str, Any]:
                                         rec.candidate_selection.get("operational_prevalences", []), rec.calibration,
                                         budget, bool(rec.dataset.get("disjointness", {}).get("disjoint")),
                                         contract_of(rec))
-    diff = sorted(k for k in set(derived) | set(rec.metrics) if derived.get(k) != rec.metrics.get(k))
+    diff = metric_differences(rec.metrics, derived)
     checks.append(_check("metrics_derivation", not diff,
-                         "metrics re-derived from per-candidate evidence" + (f"; mismatch: {diff[:8]}" if diff else "")))
+                         "metrics re-derived from per-candidate evidence (exact; p-value values from the platform "
+                         f"libm within relative {LIBM_REL_TOL:g})" + (f"; mismatch: {diff[:8]}" if diff else "")))
     return _report(rec, checks)
 
 

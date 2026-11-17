@@ -357,6 +357,16 @@ the results fingerprint and by **exact replay** (`mlbreak replay <id>`, refused 
 dataset, victim, calibration, shadow, attacker-output, metrics and results fingerprints). Integrity is not
 authenticity (see [reproducibility](reproducibility.md#integrity-is-not-authenticity)).
 
+**Cross-platform verification.** Re-derivation is exact except for values produced by a transcendental function of
+the platform's C math library, which is not correctly rounded: the `value` of the normal-approximation p-values
+(`*_leakage_p_value`, `*_placebo_p_value`, computed as `0.5·erfc(z/√2)`) and `negative_log_likelihood` scores (`log`).
+They are compared with a relative tolerance of 1e-12. This was found when records written on macOS failed
+verification on Linux CI: `u`, the tie term, the variance, `√var` and `z` were bit-identical, and only `erfc`
+differed, by 1–2 ULP (e.g. 0.5484553232697535 vs 0.5484553232697537). The inputs (`z`) and every decision derived
+from those values (`leakage_claimed`, `discrimination_claimed`, member decisions) are still compared exactly, and any
+edit of a stored value also breaks `record_sha256`. Historical v1 fixtures are byte-identical and verify on macOS
+and on Linux (Python 3.11 and 3.12).
+
 The **multi-seed study** (`mlbreak member study`, `POST /api/membership/study`) stores per-seed rows and a summary
 re-derived on verification (`MLB-MIS-<12 hex>` under `<data dir>/membership_studies/`), and can be replayed.
 

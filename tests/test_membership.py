@@ -458,9 +458,17 @@ def test_historical_v1_records_load_and_verify_under_their_schema(v1_engine):
 
 def test_historical_v1_replay_and_defend(v1_engine):
     eng, man = v1_engine
-    r = eng.replay(man["decoy_attack"]["experiment_id"])
-    assert r["identical"] and "ground_truth_sha256" in {c["check"] for c in r["checks"]}
-    assert "metrics_sha256" not in {c["check"] for c in r["checks"]} and "v1" in r["notes"][0]
+    r = eng.replay(man["decoy_attack"]["experiment_id"])   # verified first: refused if the evidence fails
+    checks = {c["check"]: c["match"] for c in r["checks"]}
+    assert "metrics_sha256" not in checks and "v1" in r["notes"][0]
+    # schema- and environment-independent parts of a replay must always match
+    assert all(checks[k] for k in ("status", "config_sha256", "dataset_sha256", "ground_truth_sha256")), r["checks"]
+    if "numerical_environment_sha256" not in r["environment_differences"]:
+        assert r["identical"], r["checks"]          # same numerical environment as the fixture: bit-identical
+    else:
+        # fixtures were written on macOS/arm64; model training is only bit-reproducible within one numerical
+        # environment (docs/reproducibility.md), and the replay must SAY so rather than claim identity
+        assert any("environment" in n.lower() for n in r["notes"]), r["notes"]
     new = eng.store.load(r["replay_experiment_id"])
     assert new.schema_version == "mlbreak.membership/v2" and new.evaluation_contract == "placebo"
     with pytest.raises(InvalidExperiment, match="v1"):
@@ -479,3 +487,98 @@ def test_results_are_reproducible_across_seeds(engine):
         d = run(seed, "random-forest-decoy")                         # the placebo never yields a membership claim
         assert d.metrics["leakage_claimed"]["value"] is None and d.evaluation_contract == "placebo"
     assert run(3).reproducibility["results_sha256"] != run(11).reproducibility["results_sha256"]
+
+
+# ------------------------------------------------------------------ cross-platform verification of historical evidence
+FIXTURE_SHA256 = {  # committed bytes of the historical fixtures: never regenerated or re-hashed
+    "MLB-EXP-1caef42a85e2.json": "3a3c7920bd9310d468aeda58cb7aeea438fe0b8ca704d9a281e7d92fbc663bd6",
+    "MLB-EXP-b1e77a5a68cb.json": "575c412584c2e57e3a12a41beef0ea9c9ab2694b8d912b29a5d717b9f2405e70",
+    "MLB-EXP-cc6efc5522f0.json": "8a5a8c2475fe9786193d54deceeca6c285644c3490434d27a56a316734c277ad",
+    "manifest.json": "901482d7800b3d4b5d20d62553f31b992f211a1b66d845965b68f98ddc51d6de",
+}
+
+
+def _fixture(name):
+    from mlbreak.evidence import parse_record
+    return parse_record(json.loads((FIXTURES / name).read_text()))
+
+
+def test_historical_fixtures_are_byte_identical():
+    import hashlib
+    assert {p.name for p in FIXTURES.iterdir()} == set(FIXTURE_SHA256)
+    for name, digest in FIXTURE_SHA256.items():
+        assert hashlib.sha256((FIXTURES / name).read_bytes()).hexdigest() == digest, name
+
+
+def test_v1_metrics_keep_v1_semantics_and_are_not_reinterpreted():
+    from mlbreak.membership.integrity import metric_differences
+    from mlbreak.membership.metrics import derive_membership_metrics
+    rec = _fixture("MLB-EXP-cc6efc5522f0.json")                                   # v1 decoy
+    args = (rec.evaluation, rec.candidates, rec.utility, rec.candidate_selection["operational_prevalences"],
+            rec.calibration, rec.attack_config["query_budget"], True)
+    assert rec.metrics["threshold_roc_auc"]["value"] is not None                 # v1: designated-group labels
+    assert metric_differences(rec.metrics, derive_membership_metrics(*args, None)) == []
+    v2 = derive_membership_metrics(*args, "membership")       # v2 rule (actual membership: none) would differ
+    assert v2["threshold_roc_auc"]["value"] is None and metric_differences(rec.metrics, v2)
+
+
+def test_libm_rounding_differences_are_tolerated_but_material_changes_are_not():
+    """Simulates the macOS-libm vs glibc difference seen in CI: erfc output off by a few ULP."""
+    from mlbreak.membership.integrity import metric_differences
+    m = {"threshold_leakage_p_value": {"value": 0.5484553232697535, "z": -0.12175967182733022,
+                                       "leakage_claimed": False, "alpha": 0.05, "definition": "d"}}
+    ulp2 = np.nextafter(np.nextafter(0.5484553232697535, 1.0), 1.0)
+    same = {"threshold_leakage_p_value": {**m["threshold_leakage_p_value"], "value": float(ulp2)}}
+    assert metric_differences(m, same) == []                                       # 2 ULP: platform rounding
+    for field, val in (("value", 0.5484553232697535 * (1 + 1e-9)), ("value", 0.01), ("value", None),
+                       ("z", float(np.nextafter(-0.12175967182733022, 0.0))),     # z is exact: 1 ULP fails
+                       ("leakage_claimed", True), ("definition", "other")):
+        bad = {"threshold_leakage_p_value": {**m["threshold_leakage_p_value"], field: val}}
+        assert metric_differences(m, bad), (field, val)
+    other = {"threshold_roc_auc": {"value": 0.49}}                                # non-libm values stay exact
+    assert metric_differences(other, {"threshold_roc_auc": {"value": float(np.nextafter(0.49, 1.0))}})
+
+
+def test_fixtures_verify_under_a_different_platform_erfc(monkeypatch, v1_engine):
+    import mlbreak.membership.metrics as mm
+    orig = mm.math.erfc
+    eng, man = v1_engine
+    monkeypatch.setattr(mm.math, "erfc", lambda x: orig(x) * (1 + 4.4e-16))      # ~2 ULP, as on glibc
+    for m in man.values():
+        assert eng.verify(m["experiment_id"])["ok"]
+    monkeypatch.setattr(mm.math, "erfc", lambda x: orig(x) * (1 + 1e-9))         # a different statistic
+    report = eng.verify(man["decoy_attack"]["experiment_id"])
+    failed = {c["check"] for c in report["checks"] if c["status"] == "fail"}
+    assert not report["ok"] and "metrics_derivation" in failed
+
+
+@pytest.mark.parametrize("edit", [
+    lambda d: d["metrics"]["threshold_leakage_p_value"].update(value=d["metrics"]["threshold_leakage_p_value"]["value"] * 1.01),
+    lambda d: d["metrics"]["threshold_leakage_p_value"].update(value=float(np.nextafter(
+        d["metrics"]["threshold_leakage_p_value"]["value"], 1.0))),               # even 1 ULP: record hash
+    lambda d: d["metrics"]["threshold_leakage_p_value"].update(leakage_claimed=True),
+    lambda d: d["candidates"][4]["threshold"].update(score=0.999),
+    lambda d: d["candidates"][1]["truth"].update(in_training=not d["candidates"][1]["truth"]["in_training"]),
+    lambda d: d.update(schema_version="mlbreak.membership/v2"),
+])
+def test_tampered_historical_evidence_is_rejected_and_not_replayed(v1_engine, edit):
+    eng, man = v1_engine
+    rid = man["decoy_attack"]["experiment_id"]
+    path = eng.store.json_path(rid)
+    data = json.loads(path.read_text())
+    edit(data)
+    path.write_text(json.dumps(data))
+    try:
+        ok = eng.verify(rid)["ok"]
+    except Exception:  # an edit that no longer parses (e.g. v2 without a contract) is rejected outright
+        ok = False
+    assert not ok
+    with pytest.raises(Exception):
+        eng.replay(rid)
+
+
+def test_nll_scores_tolerate_platform_log_but_not_edits():
+    from mlbreak.membership.integrity import _libm_close
+    x = float(np.log(0.37))
+    assert _libm_close(x, float(np.nextafter(x, 0.0))) and not _libm_close(x, x * (1 + 1e-9))
+    assert not _libm_close(x, None) and _libm_close(None, None)
