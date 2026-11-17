@@ -31,7 +31,7 @@ at least one passing security regression case. `tests/test_regression.py` enforc
 | Prevention: differential privacy | Not implemented; output restriction is explicitly not DP (see [ml04-membership-inference.md](ml04-membership-inference.md#8-defenses-privacyutility-trade-off-and-where-defenses-fail)) |
 
 Leakage is claimed only from the final evaluation population with thresholds calibrated on the attacker's own
-reference models; a decoy victim is the negative control. Details: [ml04-membership-inference.md](ml04-membership-inference.md).
+reference models; a decoy victim (no member among the candidates) is a placebo control and a low-capacity logistic regression with real members is the low-leakage reference. Details: [ml04-membership-inference.md](ml04-membership-inference.md).
 
 ## ML03 coverage
 

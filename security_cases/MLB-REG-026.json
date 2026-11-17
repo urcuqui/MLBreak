@@ -1,0 +1,26 @@
+{
+  "id": "MLB-REG-026",
+  "family": "membership",
+  "title": "Low-leakage reference: a low-capacity victim with real members shows little measured leakage",
+  "owasp_id": "ML04:2023",
+  "model_id": "logreg-l2",
+  "seed": 7,
+  "defended_evaluation": "none",
+  "invariants": [
+    {"id": "real-members", "kind": "security", "posture": "undefended", "metric": "actual_member_fraction", "op": "==", "value": 0.5,
+     "description": "Unlike the placebo, half of the candidates are ACTUAL training members of this victim (250/500), under the membership contract."},
+    {"id": "threshold-auc-low", "kind": "security", "posture": "undefended", "metric": "threshold_roc_auc", "op": "<=", "value": 0.6,
+     "description": "Measured threshold-attack AUC against real members must stay ≤ 0.6 (observed 0.511; 20-seed range 0.464–0.555 over both label settings). An empirical result for this model and data, not a privacy guarantee."},
+    {"id": "shadow-auc-low", "kind": "security", "posture": "undefended", "metric": "shadow_roc_auc", "op": "<=", "value": 0.6,
+     "description": "Measured shadow-attack AUC must stay ≤ 0.6 (observed 0.468; 20-seed range 0.438–0.557)."},
+    {"id": "threshold-advantage-low", "kind": "security", "posture": "undefended", "metric": "threshold_membership_advantage", "op": "<=", "value": 0.15,
+     "description": "Threshold advantage TPR − FPR must stay ≤ 0.15 (observed 0.024; 20-seed range −0.044 to +0.060)."},
+    {"id": "shadow-advantage-low", "kind": "security", "posture": "undefended", "metric": "shadow_membership_advantage", "op": "<=", "value": 0.15,
+     "description": "Shadow advantage must stay ≤ 0.15 (observed 0.012; 20-seed range −0.060 to +0.100)."},
+    {"id": "small-gap", "kind": "security", "posture": "undefended", "metric": "generalization_gap", "op": "<=", "value": 0.1,
+     "description": "The low-capacity model barely overfits (observed gap −0.013; 20-seed range −0.063 to +0.062)."},
+    {"id": "utility", "kind": "utility", "posture": "undefended", "metric": "test_accuracy", "op": ">=", "value": 0.68,
+     "description": "Held-out accuracy must stay ≥ 0.68 (observed 0.740; 20-seed minimum 0.692)."}
+  ],
+  "rationale": "The genuine negative-direction reference: the same attacker knowledge, candidates and outputs as MLB-REG-019, but a victim whose small generalisation gap leaves little membership signal. Its absence of leakage is NOT assumed: leakage is tested on real members and non-members each run, and was claimed on 2 of 20 seeds in each 20-seed study (no claim at seed 7), so no invariant asserts 'no leakage'."
+}

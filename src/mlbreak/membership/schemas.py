@@ -11,6 +11,21 @@ Separation of roles inside one record:
 * :class:`MembershipTruth` — EVALUATOR-only ground truth (designated group, real training membership, source
   population). The attack code never receives it; it is attached after the attack returns.
 
+Schema versions (both load and verify; neither is reinterpreted):
+
+* ``mlbreak.membership/v1`` — metrics are computed against the DESIGNATED group (``truth.group``). For the decoy
+  victim this made them placebo population-discrimination metrics labelled as membership metrics. v1 records keep
+  their stored meaning and hashes; they are verified under v1 rules and flagged when they are decoy records.
+* ``mlbreak.membership/v2`` — every record declares an ``evaluation_contract``:
+
+  - ``membership`` — candidates contain actual training members and actual non-members; ordinary membership metrics
+    use the ACTUAL membership ``truth.in_training``;
+  - ``placebo`` — no candidate is a training member of the victim (decoy). Ordinary membership metrics still use the
+    actual membership (so positive-class metrics such as ROC AUC and TPR are UNDEFINED, and only false-positive
+    metrics on real non-members are defined); a separate PLACEBO analysis (``*_placebo_*`` metrics) measures whether
+    the attack separates the two designated source pools, placebo group A (drawn from the pool the real victim was
+    trained on) and group B (the evaluation pool). It never claims that group A contains members.
+
 Every request schema is strict and contains no field through which a membership flag can be supplied: the inputs are
 a victim configuration, candidate counts, attacker knowledge switches and effort budgets.
 """
@@ -26,7 +41,9 @@ from ..inversion.schemas import LabelOnly, QuantizedProbability, RestrictivePoli
 from ..schemas import ExperimentId, Strict
 from .data import N_EVAL_NON_MEMBERS, N_TRAIN
 
-MEMBERSHIP_SCHEMA = "mlbreak.membership/v1"
+MEMBERSHIP_SCHEMA_V1 = "mlbreak.membership/v1"
+MEMBERSHIP_SCHEMA = "mlbreak.membership/v2"
+EvaluationContract = Literal["membership", "placebo"]
 SCENARIO_ID = "ml04-training-membership-inference"
 ModelId = Literal["random-forest-overfit", "logreg-l2", "random-forest-decoy"]
 Signal = Literal["true_label_confidence", "negative_log_likelihood", "max_confidence"]
@@ -222,7 +239,9 @@ class AttackCalibration(BaseModel):
 
 
 class MembershipRecord(BaseModel):
-    schema_version: Literal["mlbreak.membership/v1"] = MEMBERSHIP_SCHEMA
+    """Schema v1 (historical). Unchanged so that stored v1 records keep their dumps and hashes; new records are
+    :class:`MembershipRecordV2`."""
+    schema_version: Literal["mlbreak.membership/v1"] = MEMBERSHIP_SCHEMA_V1
     family: Literal["membership"] = "membership"
     experiment_id: str
     created_at: str
@@ -255,6 +274,41 @@ class MembershipRecord(BaseModel):
     duration_ms: float
 
 
+class MembershipTruthV2(MembershipTruth):
+    """v2 ground truth with the three notions kept apart:
+
+    * ``in_training`` — ACTUAL membership in this victim's training set (the label of ordinary membership metrics);
+    * ``group`` / ``population`` — the DESIGNATED candidate group and its source pool (``member`` = drawn from the
+      ``victim_train`` pool, ``non_member`` = drawn from ``evaluation_non_members``);
+    * ``placebo_group`` — ``"A"`` (``victim_train`` pool) / ``"B"`` (evaluation pool) under the placebo contract only,
+      ``None`` under the membership contract.
+    """
+
+    placebo_group: Literal["A", "B"] | None
+
+
+class CandidateResultV2(CandidateResult):
+    truth: MembershipTruthV2
+
+
+class MembershipRecordV2(MembershipRecord):
+    """Schema v2: explicit evaluation contract; ordinary membership metrics use actual membership."""
+
+    schema_version: Literal["mlbreak.membership/v2"] = MEMBERSHIP_SCHEMA  # type: ignore[assignment]
+    evaluation_contract: EvaluationContract
+    candidates: list[CandidateResultV2]  # type: ignore[assignment]
+
+
+def contract_of(rec) -> str | None:
+    """``membership`` / ``placebo`` for v2 records, ``None`` (designated-group semantics) for v1 records."""
+    return getattr(rec, "evaluation_contract", None)
+
+
+def actual_member(rec, c) -> bool:
+    """Label of ordinary membership metrics: actual membership (v2) or the stored designated group (v1)."""
+    return c.truth.in_training if contract_of(rec) else c.truth.group == "member"
+
+
 def policy_of(defense: dict[str, Any] | None) -> dict[str, Any]:
     """Output policy implied by a defense (full probability unless the defense is an output restriction)."""
     if defense and defense.get("kind") == "output_restriction":
@@ -262,7 +316,8 @@ def policy_of(defense: dict[str, Any] | None) -> dict[str, Any]:
     return {"kind": "full_probability"}
 
 
-__all__ = ["MEMBERSHIP_SCHEMA", "SCENARIO_ID", "ATTACKS", "LABEL_SIGNALS", "CandidateSelection",
+__all__ = ["MEMBERSHIP_SCHEMA", "MEMBERSHIP_SCHEMA_V1", "MembershipRecordV2", "CandidateResultV2", "MembershipTruthV2",
+           "EvaluationContract", "contract_of", "actual_member", "SCENARIO_ID", "ATTACKS", "LABEL_SIGNALS", "CandidateSelection",
            "MembershipAttackConfig", "MembershipBaselineRequest", "MembershipAttackRequest", "MembershipDefendRequest",
            "MembershipDefense", "Regularization", "ComplexityReduction", "OutputRestriction", "QuantizedProbability",
            "LabelOnly", "MembershipRecord", "CandidateResult", "MembershipTruth", "AttackerObservation",

@@ -22,8 +22,17 @@ from typing import Any, Callable
 import numpy as np
 
 from ..attacks import QueryBudgetExceeded
-from ..inversion.defenses import apply_policy, describe_policy, is_valid_output
+from ..inversion.defenses import apply_policy, is_valid_output
+from ..inversion.defenses import describe_policy as _describe_policy
 from .models import FittedModel
+
+
+def describe_policy(policy: dict[str, Any]) -> dict[str, Any]:
+    """The ML03 policy description with ML04's label (P(high risk)); ML03 records are unaffected."""
+    out = _describe_policy(policy)
+    out["releases"] = out["releases"].replace("P(elevated payment risk)", "P(high risk)")
+    return out
+
 
 __all__ = ["MembershipService", "counting_oracle", "apply_policy", "describe_policy", "is_valid_output"]
 

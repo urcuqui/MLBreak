@@ -9,7 +9,13 @@ Beyond the shared fingerprints, verification re-derives, without re-running any 
 * every member / non-member decision from the stored score and the re-derived thresholds;
 * query order and budget, policy-valid released outputs, utility rows under the policy;
 * ground-truth consistency (designated group ⇔ source population; real training membership false for the decoy
-  control), and finally every metric.
+  control), and finally every metric;
+* that membership labels match the victim's ACTUAL training population: the deterministic dataset is regenerated
+  (data only, no model) and every candidate's features / label must equal its source record, ``in_training`` must
+  equal "source population = the victim's training population", and the victim's training-population hash must
+  match. Schema v2 additionally checks the evaluation contract (``placebo`` ⇔ no actual member) and the placebo
+  groups. Schema v1 records are verified under v1 rules; v1 decoy records are flagged (not failed) because their
+  stored metrics are placebo population-discrimination metrics computed against designated groups.
 
 The shadow meta-classifier's scores cannot be re-derived without re-training it; they are covered by the results
 fingerprint and by exact replay.
@@ -25,7 +31,9 @@ from ..hashing import sha256_json
 from ..integrity import INTEGRITY_GUARANTEE, _check, record_sha256
 from .attacks import calibrate, class_keys, decide, signal
 from .defenses import apply_policy, is_valid_output
+from .data import load_membership_dataset
 from .metrics import ATTACKS, derive_membership_metrics
+from .schemas import contract_of
 
 
 def _dump(x):
@@ -82,12 +90,22 @@ def candidate_errors(rec) -> list[str]:
         errs.append("candidate identifiers are not sequential")
     points = {a: {p["name"]: p for p in rec.calibration["attacks"][a]["operating_points"]}
               for a in ATTACKS} if rec.calibration else {}
+    contract = contract_of(rec)
+    if contract is not None:
+        if (contract == "placebo") != (not any(c.truth.in_training for c in rec.candidates)) or \
+                (contract == "placebo") != decoy:
+            errs.append(f"evaluation contract {contract!r} does not match the actual membership of the candidates")
     for k, c in enumerate(rec.candidates):
         t = c.truth
         if (t.group == "member") != (t.population == "victim_train"):
             errs.append(f"{c.candidate_id}: designated group ≠ source population")
-        if t.in_training != (t.group == "member" and not decoy):
+        if t.in_training != (t.group == "member" and not decoy) or \
+                t.in_training != (t.population == rec.model.get("training_population")):
             errs.append(f"{c.candidate_id}: in_training inconsistent with the victim's training population")
+        if contract is not None:
+            want = (("A" if t.population == "victim_train" else "B") if contract == "placebo" else None)
+            if getattr(t, "placebo_group", None) != want:
+                errs.append(f"{c.candidate_id}: placebo group inconsistent with the evaluation contract")
         if rec.evaluation == "clean":
             if c.observation or c.threshold or c.shadow:
                 errs.append(f"{c.candidate_id}: a clean evaluation has no attacker output")
@@ -127,6 +145,31 @@ def candidate_errors(rec) -> list[str]:
     return errs
 
 
+def source_errors(rec) -> list[str]:
+    """Regenerate the deterministic dataset (no model) and check every candidate against its source record."""
+    errs: list[str] = []
+    ds = load_membership_dataset(rec.seed)
+    fp = ds.fingerprint()
+    if any(rec.dataset.get(k) != v for k, v in fp.items()):
+        return ["stored dataset fingerprints differ from the regenerated populations"]
+    pop = rec.model.get("training_population")
+    if rec.model.get("training_population_sha256") != fp.get(f"{pop}_sha256"):
+        errs.append("victim training-population hash does not match the regenerated population")
+    for c in rec.candidates:
+        t = c.truth
+        if t.population not in ("victim_train", "evaluation_non_members") or \
+                not 0 <= t.population_index < len(ds[t.population].y):
+            errs.append(f"{c.candidate_id}: unknown source record")
+            continue
+        o = c.observation
+        if o is not None:
+            src = ds[t.population]
+            if o.features != src.X[t.population_index].tolist() or \
+                    (o.label is not None and o.label != int(src.y[t.population_index])):
+                errs.append(f"{c.candidate_id}: observed record differs from its source record")
+    return errs
+
+
 def verify_membership_record(rec) -> dict[str, Any]:
     repro = rec.reproducibility
     checks = [
@@ -148,10 +191,28 @@ def verify_membership_record(rec) -> dict[str, Any]:
     checks.append(_check("candidates_revalidated", not errs,
                          "scores, decisions, query order, policy outputs and ground-truth consistency re-checked"
                          + (f"; {errs[:5]}" if errs else "")))
+    serrs = source_errors(rec)
+    checks.append(_check("membership_labels_match_training_population", not serrs,
+                         "dataset regenerated; every candidate equals its source record and in_training ⇔ source "
+                         "population = the victim's training population" + (f"; {serrs[:4]}" if serrs else "")))
+    contract = contract_of(rec)
+    if contract is None:
+        decoy = rec.model.get("training_population") != "victim_train"
+        checks.append(_check(
+            "evaluation_contract", None,
+            "schema v1: metrics use the designated group" + (
+                "; THIS IS A DECOY RECORD — its stored membership-named metrics are placebo population-discrimination "
+                "metrics (no candidate is a member); see docs/ml04-membership-inference.md §9" if decoy else
+                " (identical to actual membership for this victim)")))
+    else:
+        checks.append(_check("evaluation_contract", True,
+                             f"{contract}: ordinary membership metrics use actual membership (in_training)"
+                             + ("; placebo analysis reported separately" if contract == "placebo" else "")))
     budget = (rec.attack_config or {}).get("query_budget")
     derived = derive_membership_metrics(rec.evaluation, rec.candidates, rec.utility,
                                         rec.candidate_selection.get("operational_prevalences", []), rec.calibration,
-                                        budget, bool(rec.dataset.get("disjointness", {}).get("disjoint")))
+                                        budget, bool(rec.dataset.get("disjointness", {}).get("disjoint")),
+                                        contract_of(rec))
     diff = sorted(k for k in set(derived) | set(rec.metrics) if derived.get(k) != rec.metrics.get(k))
     checks.append(_check("metrics_derivation", not diff,
                          "metrics re-derived from per-candidate evidence" + (f"; mismatch: {diff[:8]}" if diff else "")))

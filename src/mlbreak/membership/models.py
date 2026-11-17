@@ -41,7 +41,7 @@ VICTIMS: dict[str, dict[str, Any]] = {
     "logreg-l2": {"family": "logistic_regression", "hyperparameters": LOGREG_L2, "population": "victim_train",
                   "description": "L2-regularised logistic regression: lower-capacity comparison victim."},
     "random-forest-decoy": {"family": "random_forest", "hyperparameters": RF_OVERFIT, "population": "decoy",
-                            "description": "Negative control: the overfitting recipe trained on a disjoint decoy "
+                            "description": "Placebo control: the overfitting recipe trained on a disjoint decoy "
                                            "population; no evaluation candidate is a training member."},
 }
 

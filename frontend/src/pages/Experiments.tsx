@@ -42,7 +42,10 @@ export function Experiments() {
               <td className="small">{e.defense ?? "—"}</td>
               <td className="num">{pct(e.clean_accuracy)}</td>
               <td className="num">{e.family === "membership"
-                ? (e.membership_auc == null ? "—"
+                ? (e.evaluation_contract && e.evaluation_contract !== "membership"
+                  ? <span title="No candidate is a training member: population discrimination, not membership">
+                      placebo{e.placebo_auc != null ? ` AUC ${e.placebo_auc.toFixed(3)}` : ""} (no members)</span>
+                  : e.membership_auc == null ? "—"
                   : <span title="ML04 has no evasion 'attack success': membership ROC AUC (threshold attack) and advantage TPR − FPR">
                       AUC {e.membership_auc.toFixed(3)} (adv. {e.membership_advantage! >= 0 ? "+" : ""}{e.membership_advantage?.toFixed(3)})</span>)
                 : e.family === "inversion"

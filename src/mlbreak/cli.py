@@ -407,8 +407,19 @@ def _print_membership(rec) -> None:
         return
     print(f"    {'victim train / test accuracy (gap)':<40} {_pct(m['train_accuracy'])} / {_pct(m['test_accuracy'])} "
           f"(gap {m['generalization_gap']['value']:+.3f})")
+    contract = m.get("evaluation_contract")
+    if contract:
+        print(f"    {'evaluation contract':<40} {contract} (actual members: {_pct(m['actual_member_fraction'])})")
     for a in ("threshold", "shadow"):
         if f"{a}_roc_auc" not in m:
+            continue
+        if m[f"{a}_roc_auc"]["value"] is None:  # placebo: no actual member, membership metrics undefined
+            fpv = m[f"{a}_fpr_at_low_fpr"]["value"]
+            low = "undefined" if fpv is None else f"{fpv:.3f}"
+            print(f"    {a + ' attack':<40} membership AUC undefined (no actual member) · real non-members called "
+                  f"members: {_pct(m[f'{a}_false_positive_rate'])} (balanced), {low} (low-FPR)")
+            print(f"    {'':<40} PLACEBO population discrimination: AUC {m[f'{a}_placebo_auc']['value']:.3f} · "
+                  f"advantage {m[f'{a}_placebo_advantage']['value']:+.3f} · p={m[f'{a}_placebo_p_value']['value']:.2g}")
             continue
         lp, lo, fp = m[f"{a}_leakage_p_value"], m[f"{a}_tpr_at_low_fpr"], m[f"{a}_fpr_at_low_fpr"]
         low = "undefined" if lo["value"] is None else f"{lo['value']:.3f} at eval FPR {fp['value']:.3f} ({lo['status']})"
@@ -486,11 +497,15 @@ def _demo_ml04(eng) -> tuple[list, bool]:
         label = d.kind + (f" ({d.policy.kind})" if d.kind == "output_restriction" else "")
         print(f"\nML04-{i}) Defense: {label} — RECALIBRATED attack on the same candidates")
         show(lab.run_defend(MembershipDefendRequest(parent_experiment_id=atk.experiment_id, defense=d)))
-    print("\nML04-7) Lower-capacity comparison — L2 logistic regression")
+    print("\nML04-7) Low-leakage reference — L2 logistic regression (real members and non-members)")
     show(lab.run_attack(MembershipAttackRequest(model_id="logreg-l2")))
-    print("\nML04-8) Negative control — the same overfitting recipe trained on a disjoint decoy population")
+    print("\nML04-8) Placebo control — the same overfitting recipe trained on a disjoint decoy population (no member)")
     neg = show(lab.run_attack(MembershipAttackRequest(model_id="random-forest-decoy")))
-    ok = neg.metrics["leakage_claimed"]["value"] == 0.0
+    nm = neg.metrics
+    ok = (nm["evaluation_contract"] == "placebo" and nm["actual_member_fraction"]["value"] == 0.0
+          and nm["leakage_claimed"]["value"] is None and nm["placebo_discrimination_claimed"]["value"] == 0.0)
+    print(f"  placebo discrimination claimed: {bool(nm['placebo_discrimination_claimed']['value'])} · membership leakage "
+          "claim: undefined (no actual member)")
     ind = lab.attacker_independence(atk)
     print(f"\nML04-9) Attacker independence of {atk.experiment_id} (ground truth permuted, populations disjoint): "
           f"{'ok' if ind['ok'] else 'FAILED'}")

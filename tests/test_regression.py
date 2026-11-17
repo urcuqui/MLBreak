@@ -12,7 +12,7 @@ def test_declared_cases_load():
     ml03 = sorted(c.id for c in cases if c.owasp_id == "ML03:2023")
     assert ml03 == ["MLB-REG-014", "MLB-REG-015", "MLB-REG-016", "MLB-REG-017", "MLB-REG-018"]
     ml04 = sorted(c.id for c in cases if c.owasp_id == "ML04:2023")
-    assert ml04 == [f"MLB-REG-{i:03d}" for i in range(19, 26)]
+    assert ml04 == [f"MLB-REG-{i:03d}" for i in range(19, 27)]
 
 
 def test_ml03_case_contract_is_validated():

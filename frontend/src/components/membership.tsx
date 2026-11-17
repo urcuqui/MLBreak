@@ -30,6 +30,56 @@ export function defenseLabel(d: MembershipDefense | null | undefined): string {
   return `Output restriction: ${policyText(d.policy)}`;
 }
 
+export const isPlacebo = (rec: MembershipRecord) => rec.evaluation_contract === "placebo";
+/** v1 decoy records: their membership-named metrics are placebo population-discrimination metrics. */
+export const isLegacyDecoy = (rec: MembershipRecord) =>
+  !rec.evaluation_contract && rec.model.training_population !== "victim_train";
+/** Label of ordinary membership metrics: actual membership (v2) or the stored designated group (v1). */
+const actual = (rec: MembershipRecord, c: MembershipCandidate) =>
+  rec.evaluation_contract ? c.truth.in_training : c.truth.group === "member";
+
+/** Contract banner shown above every ML04 result. */
+export function ContractNote({ rec }: { rec: MembershipRecord }) {
+  if (isLegacyDecoy(rec)) return (
+    <div className="callout bad mt"><strong>Schema v1 decoy record.</strong> No candidate is a training member of this victim.
+      Its membership-named metrics were computed against DESIGNATED groups, so they are placebo population-discrimination
+      metrics, not membership metrics. Re-run the experiment for a v2 record with an explicit placebo contract.</div>);
+  if (isPlacebo(rec)) return (
+    <div className="callout mt"><strong>Placebo control.</strong> No candidate is a training member of this victim
+      ({mratio(rec, "actual_member_fraction")?.numerator ?? 0} actual members), so membership AUC, TPR and the leakage test are
+      undefined. The placebo analysis below asks whether the attack separates two pools of NON-members; any separation would
+      reveal a population difference or a pipeline leak, never membership.</div>);
+  return null;
+}
+
+/** Placebo contract: population discrimination between groups A and B (no candidate is a member). */
+export function PlaceboSummary({ rec }: { rec: MembershipRecord }) {
+  const claimed = (rec.metrics.placebo_discrimination_claimed as { value: number } | undefined)?.value === 1;
+  return (
+    <>
+      <ContractNote rec={rec} />
+      {ATTACKS.map((a) => {
+        const p = rec.metrics[`${a}_placebo_p_value`] as { value: number | null } | undefined;
+        return (
+          <div key={a} className="stack">
+            <h3 className="small">{ATTACK_LABEL[a]} — placebo (population discrimination)</h3>
+            <div className="tiles">
+              <Tile label="Placebo AUC (group A vs B)" hint="0.5 expected: neither group contains a training member">
+                <span className="num strong">{fix(mval(rec, `${a}_placebo_auc`))}</span></Tile>
+              <Tile label="Placebo advantage" hint="call rate of group A − call rate of group B"><span className="num">{signed(mval(rec, `${a}_placebo_advantage`))}</span></Tile>
+              <Tile label="Real non-members called members" hint="false positives on actual non-members, balanced point">
+                <RatioView r={mratio(rec, `${a}_false_positive_rate`)} /></Tile>
+              <Tile label="…at the low-FPR threshold"><RatioView r={mratio(rec, `${a}_fpr_at_low_fpr`)} /></Tile>
+              <Tile label="Placebo p"><span className="num">{p?.value == null ? "—" : p.value.toPrecision(2)}</span></Tile>
+            </div>
+          </div>);
+      })}
+      <p className="muted small">Placebo discrimination: {claimed ? <Badge tone="critical">claimed — investigate the pipeline</Badge>
+        : <Badge tone="good">not claimed</Badge>} · membership leakage claim: <Badge tone="neutral">undefined (no actual member)</Badge></p>
+    </>
+  );
+}
+
 function Adv() { return <Badge tone="info">adversary</Badge>; }
 function EvalOnly() { return <Badge tone="warning">evaluator only</Badge>; }
 
@@ -67,8 +117,10 @@ function lowFpr(rec: MembershipRecord, a: Attack) {
 
 /** Headline per attack: AUC, advantage, accuracy, TPR at the calibrated low-FPR point, leakage claim. */
 export function MembershipSummary({ rec }: { rec: MembershipRecord }) {
+  if (isPlacebo(rec)) return <PlaceboSummary rec={rec} />;
   return (
     <>
+      <ContractNote rec={rec} />
       {ATTACKS.map((a) => {
         const lp = rec.metrics[`${a}_leakage_p_value`] as { value: number | null; leakage_claimed: boolean } | undefined;
         const { t, f } = lowFpr(rec, a);
@@ -130,12 +182,15 @@ export function RocCurves({ rec }: { rec: MembershipRecord }) {
   const colors: Record<Attack, string> = { threshold: "#e5a50a", shadow: "#62a0ea" };
   const data: unknown[] = [{ type: "scatter", mode: "lines", x: [0, 1], y: [0, 1], name: "no signal",
     line: { dash: "dot", color: "#5b6b7a" }, hoverinfo: "skip" }];
+  const placebo = isPlacebo(rec);
   for (const a of ATTACKS) {
-    const roc = rec.metrics[`${a}_roc_curve`] as { points: number[][] } | undefined;
-    if (!roc) continue;
+    const roc = rec.metrics[placebo ? `${a}_placebo_roc_curve` : `${a}_roc_curve`] as { points: number[][] | null } | undefined;
+    if (!roc?.points) continue;
     data.push({ type: "scatter", mode: "lines", x: roc.points.map((p) => p[0]), y: roc.points.map((p) => p[1]),
-      name: `${ATTACK_LABEL[a]} (AUC ${fix(mval(rec, `${a}_roc_auc`))})`, line: { color: colors[a], width: 2 },
-      hovertemplate: "FPR %{x:.3f}<br>TPR %{y:.3f}<extra></extra>" });
+      name: `${ATTACK_LABEL[a]} (${placebo ? "placebo " : ""}AUC ${fix(mval(rec, placebo ? `${a}_placebo_auc` : `${a}_roc_auc`))})`,
+      line: { color: colors[a], width: 2 },
+      hovertemplate: placebo ? "group B called %{x:.3f}<br>group A called %{y:.3f}<extra></extra>" : "FPR %{x:.3f}<br>TPR %{y:.3f}<extra></extra>" });
+    if (placebo) continue;
     const { t, f } = lowFpr(rec, a);
     const pts = [[mval(rec, `${a}_false_positive_rate`), mval(rec, `${a}_membership_recall`), "balanced"]];
     if (t?.value != null) pts.push([f?.value ?? null, t.value, "low FPR"]);
@@ -147,25 +202,50 @@ export function RocCurves({ rec }: { rec: MembershipRecord }) {
   return (
     <>
       <Plot height={340} data={data}
-        ariaLabel={`ROC curves on the evaluation population (${n.n_members} members, ${n.n_non_members} non-members): ` +
-          ATTACKS.map((a) => `${ATTACK_LABEL[a]} AUC ${fix(mval(rec, `${a}_roc_auc`))}`).join("; ")}
-        layout={{ margin: { l: 56, r: 16, t: 16, b: 48 }, xaxis: { title: { text: "false positive rate (non-members called members)" }, range: [0, 1] },
+        ariaLabel={placebo
+          ? `Placebo curves (no candidate is a member): ${ATTACKS.map((a) => `${ATTACK_LABEL[a]} placebo AUC ${fix(mval(rec, `${a}_placebo_auc`))}`).join("; ")}`
+          : `ROC curves on the evaluation population (${n.n_members} members, ${n.n_non_members} non-members): ` +
+            ATTACKS.map((a) => `${ATTACK_LABEL[a]} AUC ${fix(mval(rec, `${a}_roc_auc`))}`).join("; ")}
+        layout={{ margin: { l: 56, r: 16, t: 16, b: 48 }, xaxis: { title: { text: placebo ? "rate group B is called member"
+          : "false positive rate (non-members called members)" }, range: [0, 1] },
           legend: { orientation: "v", x: 0.98, xanchor: "right", y: 0.04, yanchor: "bottom", bgcolor: "rgba(15,20,27,0.85)", font: { size: 11 } },
-          yaxis: { title: { text: "true positive rate" }, range: [0, 1] } }} />
-      <p className="muted small">Evaluation population: {n.n_members} training members + {n.n_non_members} disjoint non-members.
-        The curve is descriptive; diamonds are the operating points chosen on calibration data, not on this curve.</p>
+          yaxis: { title: { text: placebo ? "rate group A is called member" : "true positive rate" }, range: [0, 1] } }} />
+      <p className="muted small">{placebo
+        ? <>PLACEBO: {n.n_members} + {n.n_non_members} candidates, none of them a training member of this victim (group A: victim-training pool; group B: evaluation pool). A curve on the
+          diagonal means the attack cannot tell the two non-member pools apart, as expected.</>
+        : <>Evaluation population: {n.n_members} training members + {n.n_non_members} disjoint non-members.
+          The curve is descriptive; diamonds are the operating points chosen on calibration data, not on this curve.</>}</p>
     </>
   );
 }
 
 export function ConfusionMatrices({ rec }: { rec: MembershipRecord }) {
+  if (isPlacebo(rec)) return (
+    <div className="grid-2">
+      {ATTACKS.map((a) => {
+        const c = rec.metrics[`${a}_placebo_calls`] as { group_a_called: number; group_a_not_called: number;
+          group_b_called: number; group_b_not_called: number } | undefined;
+        if (!c) return null;
+        return (
+          <div key={a} className="table-wrap" tabIndex={0} role="region" aria-label={`${ATTACK_LABEL[a]} placebo calls`}>
+            <table className="table small">
+              <caption>{ATTACK_LABEL[a]} — placebo calls (all candidates are non-members)</caption>
+              <thead><tr><th scope="col">pool ↓ / called →</th><th scope="col">"member"</th><th scope="col">non-member</th></tr></thead>
+              <tbody>
+                <tr><th scope="row">group A (victim-training pool)</th><td className="num">{c.group_a_called}</td><td className="num">{c.group_a_not_called}</td></tr>
+                <tr><th scope="row">group B (evaluation pool)</th><td className="num">{c.group_b_called}</td><td className="num">{c.group_b_not_called}</td></tr>
+              </tbody>
+            </table>
+          </div>);
+      })}
+    </div>);
   return (
     <div className="grid-2">
       {ATTACKS.map((a) => {
         const c = rec.metrics[`${a}_confusion`] as { tp: number; fp: number; tn: number; fn: number } | undefined;
         if (!c) return null;
         return (
-          <div key={a} className="table-wrap">
+          <div key={a} className="table-wrap" tabIndex={0} role="region" aria-label={`${ATTACK_LABEL[a]} confusion matrix`}>
             <table className="table small">
               <caption>{ATTACK_LABEL[a]} — balanced operating point</caption>
               <thead><tr><th scope="col">truth ↓ / called →</th><th scope="col">member</th><th scope="col">non-member</th></tr></thead>
@@ -181,6 +261,7 @@ export function ConfusionMatrices({ rec }: { rec: MembershipRecord }) {
 }
 
 export function OperationalPrecision({ rec }: { rec: MembershipRecord }) {
+  if (isPlacebo(rec)) return <p className="muted">Not applicable: precision needs actual members, and this placebo has none.</p>;
   const th = rec.metrics.threshold_operational_precision as { values: { prevalence: number; precision: number | null; false_discovery_rate: number | null }[] } | undefined;
   const sh = rec.metrics.shadow_operational_precision as typeof th;
   if (!th || !sh) return null;
@@ -232,9 +313,10 @@ export function CandidateExplorer({ rec }: { rec: MembershipRecord }) {
                 <td>{d.member_balanced ? <Badge tone="critical">member</Badge> : <Badge tone="neutral">non-member</Badge>}</td>
                 <td>{d.member_low_fpr == null ? <span className="muted">undefined</span> : d.member_low_fpr ? <Badge tone="critical">member</Badge> : <Badge tone="neutral">non-member</Badge>}</td></tr>); })}</tbody></table></div></li>
         <li><div className="row gap wrap"><strong>4 · Ground truth</strong><EvalOnly /></div>
-          {reveal ? <p>Designated group <strong>{c.truth.group}</strong> · in victim training set: <strong>{String(c.truth.in_training)}</strong> ·
-            source {c.truth.population} #{c.truth.population_index} · threshold {c.threshold!.member_balanced === (c.truth.group === "member") ? "✓ correct" : "✕ wrong"} ·
-            shadow {c.shadow!.member_balanced === (c.truth.group === "member") ? "✓ correct" : "✕ wrong"}</p>
+          {reveal ? <p>Actual training member: <strong>{String(c.truth.in_training)}</strong> · designated source pool {c.truth.population} #{c.truth.population_index}
+            {c.truth.placebo_group && <> · placebo group {c.truth.placebo_group}</>} ·
+            threshold {c.threshold!.member_balanced === actual(rec, c) ? "✓ correct" : "✕ wrong"} ·
+            shadow {c.shadow!.member_balanced === actual(rec, c) ? "✓ correct" : "✕ wrong"}{isLegacyDecoy(rec) && " (v1: against the designated group)"}</p>
             : <p className="muted"><span className="hidden-attr">🔒 hidden</span> The evaluation engine holds membership; it was never passed to the attack code.</p>}</li>
       </ol>
       <CandidateTable rec={rec} reveal={reveal} />
@@ -248,12 +330,12 @@ function CandidateTable({ rec, reveal }: { rec: MembershipRecord; reveal: boolea
       <table className="table small">
         <caption className="sr-only">Attacker-side columns, then the evaluator-only ground truth</caption>
         <thead><tr><th>candidate</th><th>released</th><th>threshold score</th><th>threshold call</th><th>shadow score</th><th>shadow call</th>
-          <th>truth (evaluator)</th></tr></thead>
+          <th>actual member (evaluator)</th></tr></thead>
         <tbody>{rec.candidates.filter((c) => c.observation).map((c) => (
           <tr key={c.candidate_id}><td className="mono">{c.candidate_id}</td><td className="mono">{c.observation!.released_output.toPrecision(3)}</td>
             <td className="mono">{c.threshold!.score.toPrecision(3)}</td><td>{c.threshold!.member_balanced ? "member" : "non-member"}</td>
             <td className="mono">{c.shadow!.score.toPrecision(3)}</td><td>{c.shadow!.member_balanced ? "member" : "non-member"}</td>
-            <td>{reveal ? c.truth.group : "🔒"}</td></tr>))}</tbody>
+            <td>{reveal ? (actual(rec, c) ? "member" : "non-member") + (c.truth.placebo_group ? ` · placebo ${c.truth.placebo_group}` : "") : "🔒"}</td></tr>))}</tbody>
       </table>
     </div>
   );
@@ -276,7 +358,7 @@ export function DefenseComparison({ rows }: { rows: MembershipRecord[] }) {
           <thead><tr><th>Configuration</th><th>Experiment</th><th>Held-out acc.</th><th>Gap</th><th>Threshold AUC</th><th>Shadow AUC</th>
             <th>Advantage (thr / shadow)</th><th>TPR@low FPR (thr)</th><th>Leakage</th><th>Reduction vs undefended (paired p)</th></tr></thead>
           <tbody>{data.map((r) => {
-            const claimed = (r.metrics.leakage_claimed as { value: number })?.value === 1;
+            const lc = (r.metrics.leakage_claimed as { value: number | null })?.value;
             const red = r.metrics.threshold_defense_reduction_p_value as { value: number } | undefined;
             return (
               <tr key={r.experiment_id}><td>{label(r)}</td><td><ExpLink id={r.experiment_id} /></td>
@@ -284,7 +366,7 @@ export function DefenseComparison({ rows }: { rows: MembershipRecord[] }) {
                 <td className="mono">{fix(mval(r, "threshold_roc_auc"))}</td><td className="mono">{fix(mval(r, "shadow_roc_auc"))}</td>
                 <td className="mono">{signed(mval(r, "threshold_membership_advantage"))} / {signed(mval(r, "shadow_membership_advantage"))}</td>
                 <td className="mono">{pct(mval(r, "threshold_tpr_at_low_fpr"))}</td>
-                <td>{claimed ? <Badge tone="critical">claimed</Badge> : <Badge tone="good">not claimed</Badge>}</td>
+                <td>{lc == null ? <Badge tone="neutral">undefined (placebo)</Badge> : lc === 1 ? <Badge tone="critical">claimed</Badge> : <Badge tone="good">not claimed</Badge>}</td>
                 <td>{red ? <><RatioView r={mratio(r, "threshold_correctness_reduction")} /> <span className="muted small">p={red.value.toPrecision(2)}</span></> : "reference"}</td></tr>);
           })}</tbody>
         </table>

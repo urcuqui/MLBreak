@@ -27,7 +27,7 @@ reports comes from an experiment that actually ran.
 make install && make ui     # Python venv + dependencies, then build the web UI (needs Node 18+)
 make run                    # http://127.0.0.1:8000 — UI and API (API docs at /docs)
 make test && make verify    # test suite, then the security regression gate
-make demo                   # all four labs end to end from the CLI
+make demo                   # all five laboratories (ML01 ×2, ML02, ML03, ML04) end to end from the CLI
 docker compose up --build   # alternative: everything in a hardened container on 127.0.0.1:8000
 ```
 
@@ -42,7 +42,7 @@ Running `npm` in the repository root fails with `ENOENT … package.json`.
 | **2D Classifier Evasion** | ML01:2023 | FGSM, PGD (white-box), random search (black-box) | adversarial training, confidence rejection | MLB-REG-001…004 | [methodology](docs/methodology.md) |
 | **Spam Filter Evasion** | ML01:2023 | DeepWordBug-style character edits (black-box), under text-preservation constraints | text normalisation, adversarial data augmentation | MLB-REG-009…013 | [ml01-spam-filter-evasion](docs/ml01-spam-filter-evasion.md) |
 | **Label-Flipping Poisoning** | ML02:2023 | random / targeted label flipping + retraining | kNN label sanitisation (replay only — no adaptive poisoner) | MLB-REG-005…008 | [ml02-data-poisoning](docs/ml02-data-poisoning.md) |
-| **Training Set Membership Inference** | ML04:2023 | calibrated threshold attack (confidence / loss / max-confidence) and shadow models + meta-classifier, calibrated on the attacker's own reference models | leaf-size regularisation, complexity reduction, quantised / label-only output (recalibrated attacks) | MLB-REG-019…025 | [ml04-membership-inference](docs/ml04-membership-inference.md) |
+| **Training Set Membership Inference** | ML04:2023 | calibrated threshold attack (confidence / loss / max-confidence) and shadow models + meta-classifier, calibrated on the attacker's own reference models | leaf-size regularisation, complexity reduction, quantised / label-only output (recalibrated attacks) | MLB-REG-019…026 | [ml04-membership-inference](docs/ml04-membership-inference.md) |
 | **Private Attribute Inversion** | ML03:2023 | black-box candidate matching (bounded queries), vs an auxiliary-only attacker | quantised probability, label-only output (adaptive only — replay does not apply) | MLB-REG-014…018 | [ml03-model-inversion](docs/ml03-model-inversion.md) |
 
 Every lab follows the same four steps in the UI — **Baseline → Attack → Defend → Evidence & replay** — with the
@@ -177,7 +177,7 @@ assumption against the auxiliary-only baseline on identical targets.
 A fictional transaction-risk classifier is trained on 600 **synthetic** records with noisy labels
 ([docs/ml04-membership-inference.md](docs/ml04-membership-inference.md)). Six disjoint populations (checked row by
 row) separate the victim's training and held-out data, the attacker's shadow and calibration data, the evaluation
-non-members and a decoy set:
+non-members and a decoy set used only by the placebo control:
 
 1. **Baseline**: training vs held-out accuracy (the generalisation gap) and the no-signal baseline.
 2. **Attack**: one query per candidate (250 members + 250 non-members). A threshold attack and a shadow-model attack
@@ -193,7 +193,8 @@ non-members and a decoy set:
 | + complexity reduction | 0.678 | 0.597 | 0.606 | +0.128 | claimed |
 | + 4-bucket quantisation | 0.725 | 0.817 | 0.826 | +0.608 | claimed — no significant reduction on any of 20 seeds |
 | + label-only output | 0.725 | 0.640 | 0.661 | +0.280 | claimed — correctness still leaks to a label-aware attacker |
-| negative control (decoy: no candidate is a member) | 0.702 | 0.498 | 0.505 | +0.000 | **not** claimed |
+| low-leakage reference: L2 logistic regression (real members) | 0.740 | 0.511 | 0.468 | +0.024 | not claimed (claimed on 2/20 seeds) |
+| placebo control: decoy (0 of 500 candidates is a member) | 0.702 | undefined | undefined | undefined | membership claim undefined; placebo AUC 0.498 / 0.505, no placebo discrimination |
 
 A 20-seed study (`mlbreak member study --seeds 0-19`) backs the regression thresholds and documents where defenses
 fail. None of these defenses is differential privacy.

@@ -13,7 +13,9 @@ record metrics):
 * ``logreg-l2``             — the lower-capacity comparison victim;
 * ``decoy``                 — the negative control (no candidate is a member).
 
-Defenses are paired per candidate with the undefended run of the same seed. Per-seed rows are stored; the summary is
+Defenses are paired per candidate with the undefended run of the same seed. Membership metrics use ACTUAL membership;
+the decoy rows (placebo contract) carry undefined membership AUC/advantage and separate ``*_placebo_*`` values
+(population discrimination). Rows of the v1 study format (no ``contract`` key) are summarised exactly as before. Per-seed rows are stored; the summary is
 re-derived from them on verification. Evaluator-facing only; no record per run is written.
 """
 
@@ -65,7 +67,7 @@ class StudyRequest(Strict):
 
 
 class StudyReport(BaseModel):
-    schema_version: str = "mlbreak.membership-study/v1"
+    schema_version: str = "mlbreak.membership-study/v2"
     report_id: str
     created_at: str
     request: dict[str, Any]
@@ -76,8 +78,15 @@ class StudyReport(BaseModel):
 
 
 def _row(seed: int, name: str, m: dict[str, Any]) -> dict[str, Any]:
-    row: dict[str, Any] = {"seed": seed, "config": name, "train_accuracy": m["train_accuracy"]["value"],
-                           "test_accuracy": m["test_accuracy"]["value"], "leakage_claimed": m["leakage_claimed"]["attacks"]}
+    row: dict[str, Any] = {"seed": seed, "config": name, "contract": m.get("evaluation_contract"),
+                           "train_accuracy": m["train_accuracy"]["value"],
+                           "test_accuracy": m["test_accuracy"]["value"], "leakage_claimed": m["leakage_claimed"]["attacks"],
+                           "leakage_test_defined": m["leakage_claimed"]["value"] is not None}
+    if "placebo_discrimination_claimed" in m:
+        row["placebo_claimed"] = m["placebo_discrimination_claimed"]["attacks"]
+        for a in ATTACKS:
+            for k in ("auc", "advantage", "p_value"):
+                row[f"{a}_placebo_{k}"] = m[f"{a}_placebo_{k}"]["value"]
     for a in ATTACKS:
         for k in _KEYS:
             row[f"{a}_{k}"] = m[f"{a}_{k}"]["value"]
@@ -103,6 +112,14 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         s: dict[str, Any] = {"seeds": len(rs), "test_accuracy": _stats([r["test_accuracy"] for r in rs]),
                              "generalization_gap": _stats([r["train_accuracy"] - r["test_accuracy"] for r in rs]),
                              "seeds_with_leakage_claimed": sum(bool(r["leakage_claimed"]) for r in rs)}
+        if rs and "contract" in rs[0]:  # study v2 rows
+            s["contract"] = rs[0]["contract"]
+            s["seeds_leakage_test_undefined"] = sum(not r["leakage_test_defined"] for r in rs)
+            if any("placebo_claimed" in r for r in rs):
+                s["seeds_with_placebo_discrimination_claimed"] = sum(bool(r.get("placebo_claimed")) for r in rs)
+                for a in ATTACKS:
+                    for k in ("auc", "advantage", "p_value"):
+                        s[f"{a}_placebo_{k}"] = _stats([r.get(f"{a}_placebo_{k}") for r in rs])
         for a in ATTACKS:
             for k in (*_KEYS, "leakage_p_value"):
                 s[f"{a}_{k}"] = _stats([r[f"{a}_{k}"] for r in rs])
@@ -141,8 +158,7 @@ def run_seed(lab, req: StudyRequest, seed: int, deadline: float) -> list[dict[st
         if name in DEFENDED:
             evaluation = "adaptive_membership_inference"
             for c, p in zip(cands, base_cands):
-                member = p.truth.group == "member"
-                c.undefended_correct = {a: getattr(p, a).member_balanced == member for a in ATTACKS}
+                c.undefended_correct = {a: getattr(p, a).member_balanced == p.truth.in_training for a in ATTACKS}
         utility = lab._utility_rows(ds, model_id, victim, policy)
         m = lab._metrics(evaluation, areq, cands, utility, cal, ds)
         if name == "rf-overfit":
@@ -234,6 +250,15 @@ def render_markdown(rep: StudyReport) -> str:
                      f"{_rng(s['threshold_roc_auc'])} | {_rng(s['shadow_roc_auc'])} | "
                      f"{_rng(s['threshold_membership_advantage'])} | {_rng(s['shadow_membership_advantage'])} | "
                      f"{_rng(s['threshold_tpr_at_low_fpr'])} | {s['seeds_with_leakage_claimed']}/{s['seeds']} |")
+    placebo = {k: s for k, s in rep.summary.items() if s.get("contract") == "placebo"}
+    if placebo:
+        lines += ["", "## Placebo control (no candidate is a training member: membership AUC is undefined)", "",
+                  "| Configuration | threshold placebo AUC | shadow placebo AUC | threshold placebo adv. | "
+                  "seeds w/ placebo discrimination claimed |", "|---|---|---|---|---|"]
+        for name, s in placebo.items():
+            lines.append(f"| {name} | {_rng(s['threshold_placebo_auc'])} | {_rng(s['shadow_placebo_auc'])} | "
+                         f"{_rng(s['threshold_placebo_advantage'])} | "
+                         f"{s['seeds_with_placebo_discrimination_claimed']}/{s['seeds']} |")
     lines += ["", "## Defenses (paired with the undefended forest of the same seed, recalibrated attacks)", "",
               "| Defense | utility drop | threshold AUC drop | shadow AUC drop | significant reduction (thr / shadow) | "
               "failures |", "|---|---|---|---|---|---|"]

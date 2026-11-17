@@ -19,6 +19,16 @@ Statistics (implemented here, no SciPy dependency):
 * Operating-point test: one-sided Fisher exact test that members are called members more often than non-members.
 * Rates at the low-FPR operating point carry 95% Wilson intervals; an evaluation FPR whose Wilson LOWER bound exceeds
   the target is flagged (the calibrated threshold did not transfer).
+
+Labels (see :mod:`.schemas` for the schema versions):
+
+* ``contract=None`` (schema v1) — metrics use the DESIGNATED group, exactly as v1 records were written;
+* ``contract="membership"`` / ``"placebo"`` (schema v2) — ordinary membership metrics use ACTUAL membership
+  (``truth.in_training``). With no actual member (placebo) every positive-class metric (AUC, TPR, advantage, precision
+  projections, the leakage test) is UNDEFINED (``None``) and the false-positive metrics are measured on real
+  non-members. The placebo contract adds ``*_placebo_*`` metrics: population discrimination between placebo group A
+  (victim-training pool, NOT this victim's training set) and group B (evaluation pool). They never use the word
+  member for group A and never produce a membership-leakage claim.
 """
 
 from __future__ import annotations
@@ -46,7 +56,10 @@ _PER_ATTACK = ("roc_auc", "leakage_p_value", "membership_accuracy", "balanced_ac
 INVARIANT_METRICS = tuple(f"{a}_{m}" for a in ATTACKS for m in _PER_ATTACK) + (
     "no_signal_accuracy", "leakage_claimed", "train_accuracy", "test_accuracy", "generalization_gap",
     "test_roc_auc", "consumer_decision_accuracy", "query_budget_utilisation", "population_disjointness",
-    "evidence_consistency", "attacker_independence")
+    "evidence_consistency", "attacker_independence", "actual_member_fraction", "placebo_discrimination_claimed") + tuple(
+    f"{a}_placebo_{m}" for a in ATTACKS for m in ("auc", "p_value", "advantage"))
+PLACEBO_POP = ("PLACEBO: the same candidates split by source pool — group A drawn from the victim-training pool and group "
+               "B from the evaluation pool; NO candidate is a training member of this victim")
 
 
 def _g(o: Any, k: str):
@@ -106,8 +119,10 @@ def wilson(k: int, n: int, z: float = 1.959963984540054) -> list[float] | None:
     return [max(0.0, c - h), min(1.0, c + h)]
 
 
-def roc_points(pos: np.ndarray, neg: np.ndarray) -> list[list[float]]:
-    """(FPR, TPR) for every distinct threshold, from (0, 0) to (1, 1)."""
+def roc_points(pos: np.ndarray, neg: np.ndarray) -> list[list[float]] | None:
+    """(FPR, TPR) for every distinct threshold, from (0, 0) to (1, 1); None when either class is empty."""
+    if not len(pos) or not len(neg):
+        return None
     s = np.r_[pos, neg]
     m = np.r_[np.ones(len(pos), bool), np.zeros(len(neg), bool)]
     order = np.argsort(-s, kind="stable")
@@ -197,7 +212,8 @@ def _attack_metrics(a: str, cands: Sequence[Any], member: list[bool], prevalence
                                          "population": EVAL_POP,
                                          "definition": "membership accuracy − accuracy of always guessing the "
                                                        "majority group (signed)"}
-    m[f"{a}_operating_point_p_value"] = {"value": fisher_one_sided(tp, fn, fp, tn), "population": EVAL_POP,
+    m[f"{a}_operating_point_p_value"] = {"value": fisher_one_sided(tp, fn, fp, tn) if P and N else None,
+                                         "population": EVAL_POP,
                                          "definition": "one-sided Fisher exact test that members are called members "
                                                        "more often than non-members at the balanced operating point"}
     low = [_g(d, "member_low_fpr") for d in dec]
@@ -263,14 +279,52 @@ def _attack_metrics(a: str, cands: Sequence[Any], member: list[bool], prevalence
     return m
 
 
+def _placebo_metrics(a: str, cands: Sequence[Any]) -> dict[str, Any]:
+    """Population discrimination between placebo groups A and B (no candidate is a member)."""
+    grp = np.array([_g(_g(c, "truth"), "placebo_group") == "A" for c in cands], dtype=bool)
+    dec = [_g(c, a) for c in cands]
+    score = np.array([_g(d, "score") for d in dec], dtype=np.float64)
+    called = np.array([bool(_g(d, "member_balanced")) for d in dec])
+    nA, nB = int(grp.sum()), int((~grp).sum())
+    mw = auc_mann_whitney(score[grp], score[~grp])
+    cA, cB = int((called & grp).sum()), int((called & ~grp).sum())
+    m: dict[str, Any] = {}
+    m[f"{a}_placebo_auc"] = {"value": mw["auc"], "n_group_a": nA, "n_group_b": nB, "population": PLACEBO_POP,
+                             "definition": "P(score of a random group-A candidate > score of a random group-B "
+                                           "candidate), ties ½ — population discrimination, NOT membership"}
+    claimed = bool(mw["p_value"] is not None and mw["p_value"] < ALPHA / 2 and (mw["auc"] or 0) > 0.5)
+    m[f"{a}_placebo_p_value"] = {"value": mw["p_value"], "z": mw["z"], "alpha_per_attack": ALPHA / 2,
+                                 "discrimination_claimed": claimed, "population": PLACEBO_POP,
+                                 "definition": "one-sided Mann–Whitney test of placebo AUC > 0.5 (same test and "
+                                               "Bonferroni split as the membership test); a claim here would indicate "
+                                               "a population difference or pipeline leak, never membership leakage"}
+    m[f"{a}_placebo_advantage"] = {
+        "value": (cA / nA - cB / nB) if nA and nB else None, "population": PLACEBO_POP,
+        "definition": "rate at which group A is called 'member' − rate for group B, at the balanced operating point "
+                      "(0 expected: neither group contains members)"}
+    m[f"{a}_placebo_calls"] = {"group_a_called": cA, "group_a_not_called": nA - cA, "group_b_called": cB,
+                               "group_b_not_called": nB - cB, "operating_point": "balanced", "population": PLACEBO_POP}
+    m[f"{a}_placebo_roc_curve"] = {"points": roc_points(score[grp], score[~grp]), "population": PLACEBO_POP,
+                                   "definition": "(rate group B called, rate group A called) at every score threshold"}
+    return m
+
+
 def derive_membership_metrics(evaluation: str, candidates: Sequence[Any], utility: Sequence[Any],
                               prevalences: Sequence[float], calibration: dict[str, Any] | None,
-                              query_budget: int | None, disjoint: bool) -> dict[str, Any]:
-    member = [_g(_g(c, "truth"), "group") == "member" for c in candidates]
+                              query_budget: int | None, disjoint: bool, contract: str | None = None) -> dict[str, Any]:
+    """``contract=None`` reproduces schema-v1 metrics exactly; ``"membership"`` / ``"placebo"`` are schema v2."""
+    if contract is None:
+        member = [_g(_g(c, "truth"), "group") == "member" for c in candidates]
+    else:
+        member = [bool(_g(_g(c, "truth"), "in_training")) for c in candidates]
     n, P = len(member), sum(member)
     N = n - P
     m: dict[str, Any] = {"n_candidates": n, "n_members": P, "n_non_members": N,
                          "evaluation_prevalence": (P / n) if n else None}
+    if contract is not None:
+        m["evaluation_contract"] = contract
+        m["actual_member_fraction"] = ratio(P, n, "candidates that are ACTUAL training members of this victim / "
+                                            "candidates (0 under the placebo contract)", EVAL_POP)
     m["no_signal_accuracy"] = ratio(max(P, N), n, "accuracy of always guessing the larger group (no model output) / "
                                     "candidates", EVAL_POP)
     m["population_disjointness"] = {"value": 1.0 if disjoint else 0.0,
@@ -289,6 +343,21 @@ def derive_membership_metrics(evaluation: str, candidates: Sequence[Any], utilit
     m["leakage_claimed"] = {"value": 1.0 if claimed else 0.0, "attacks": claimed, "alpha": ALPHA,
                             "definition": "1 if ANY attack's one-sided Mann–Whitney p < alpha/2 with AUC > 0.5 "
                                           "(Bonferroni over the two attacks), else 0"}
+    if contract is not None and (P == 0 or N == 0):
+        m["leakage_claimed"].update(value=None, status="undefined",
+                                    reason="no membership test is possible: the candidates contain no actual "
+                                           + ("training member" if P == 0 else "non-member"))
+    if contract == "placebo":
+        pc = []
+        for a in ATTACKS:
+            m.update(_placebo_metrics(a, candidates))
+            if m[f"{a}_placebo_p_value"]["discrimination_claimed"]:
+                pc.append(a)
+        m["placebo_discrimination_claimed"] = {
+            "value": 1.0 if pc else 0.0, "attacks": pc, "alpha": ALPHA, "population": PLACEBO_POP,
+            "definition": "1 if ANY attack separates placebo groups A and B (one-sided Mann–Whitney p < alpha/2, AUC "
+                          "> 0.5). Expected 0: a claim indicates a population difference or pipeline leak; it is "
+                          "never a membership-leakage claim"}
     q = sum(_g(c, "observation") is not None for c in candidates)
     m["queries"] = {"total": q, "budget": query_budget, "per_candidate": 1,
                     "victim_queries_for_shadow_or_reference_models": 0,

@@ -1,22 +1,26 @@
 {
   "id": "MLB-REG-023",
   "family": "membership",
-  "title": "Negative control: a victim with no member among the candidates yields no leakage claim",
+  "title": "Placebo control: a victim with no member among the candidates yields no unsupported claim",
   "owasp_id": "ML04:2023",
   "model_id": "random-forest-decoy",
   "seed": 7,
   "defended_evaluation": "none",
   "invariants": [
-    {"id": "no-leakage-claim", "kind": "security", "posture": "undefended", "metric": "leakage_claimed", "op": "==", "value": 0.0,
-     "description": "The decoy victim (same overfitting recipe, trained on a disjoint population) has no candidate in its training set: no attack may claim leakage (observed none; 0/20 seeds)."},
-    {"id": "threshold-auc-null", "kind": "security", "posture": "undefended", "metric": "threshold_roc_auc", "op": "<=", "value": 0.6,
-     "description": "Threshold-attack AUC must stay near chance (observed 0.498; 20-seed range 0.462–0.542)."},
-    {"id": "shadow-auc-null", "kind": "security", "posture": "undefended", "metric": "shadow_roc_auc", "op": "<=", "value": 0.6,
-     "description": "Shadow-attack AUC must stay near chance (observed 0.505; 20-seed range 0.451–0.544)."},
-    {"id": "advantage-null", "kind": "security", "posture": "undefended", "metric": "threshold_membership_advantage", "op": "<=", "value": 0.15,
-     "description": "Membership advantage must stay near 0 (observed 0.000; 20-seed range −0.080 to +0.080)."},
+    {"id": "zero-actual-members", "kind": "security", "posture": "undefended", "metric": "actual_member_fraction", "op": "==", "value": 0.0,
+     "description": "The decoy victim's training set contains none of the candidates: the record must carry the placebo contract with 0 actual members (0/500), so membership AUC, TPR and the membership-leakage test are undefined rather than computed from placebo labels."},
+    {"id": "no-placebo-discrimination", "kind": "security", "posture": "undefended", "metric": "placebo_discrimination_claimed", "op": "==", "value": 0.0,
+     "description": "Neither attack may separate placebo group A (victim-training pool, not trained on) from group B (evaluation pool) (observed no claim; 0/20 seeds label known, 2/20 label unknown — within chance at alpha 0.05)."},
+    {"id": "threshold-placebo-auc", "kind": "security", "posture": "undefended", "metric": "threshold_placebo_auc", "op": "<=", "value": 0.6,
+     "description": "Threshold-attack placebo AUC must stay near chance (observed 0.498; 20-seed range 0.462–0.542). Same bound as the v1 invariant, now on the correctly named metric."},
+    {"id": "shadow-placebo-auc", "kind": "security", "posture": "undefended", "metric": "shadow_placebo_auc", "op": "<=", "value": 0.6,
+     "description": "Shadow-attack placebo AUC must stay near chance (observed 0.505; 20-seed range 0.451–0.544)."},
+    {"id": "placebo-advantage", "kind": "security", "posture": "undefended", "metric": "threshold_placebo_advantage", "op": "<=", "value": 0.15,
+     "description": "Call-rate difference between the two placebo groups must stay near 0 (observed 0.000; 20-seed range −0.080 to +0.080)."},
+    {"id": "false-accusations-bounded", "kind": "security", "posture": "undefended", "metric": "threshold_fpr_at_low_fpr", "op": "<=", "value": 0.03,
+     "description": "NEW (defined on real non-members): at the threshold calibrated for 1% FPR, at most 3% of the 500 actual non-members may be called members (observed 4/500 = 0.8%; 20-seed max 2.2%)."},
     {"id": "control-still-overfits", "kind": "attack_canary", "posture": "undefended", "metric": "generalization_gap", "op": ">=", "value": 0.2,
      "description": "The decoy victim is as overfit as the real one (observed gap 0.298), so the null result is due to non-membership, not to a weaker model."}
   ],
-  "rationale": "The same pipeline, candidates and attacks against a victim whose training set contains none of the designated 'members'. A leakage claim here would mean the pipeline leaks group information (e.g. distribution shift between populations, candidate ordering) rather than the model leaking membership."
+  "rationale": "A placebo, not a membership evaluation: the same pipeline, candidates and attacks against a victim whose training set contains none of them. Until schema v1 this case scored the designated groups as if they were members and non-members; under schema v2 membership metrics use actual membership (undefined here) and the group comparison is reported as placebo population discrimination. A placebo claim would reveal a population difference or a pipeline leak. The genuine low-leakage reference with real members is MLB-REG-026."
 }

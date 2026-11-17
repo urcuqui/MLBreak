@@ -46,7 +46,7 @@ export function MembershipDetail({ rec }: { rec: MembershipRecord }) {
         <>
           <Panel title="Final evaluation" subtitle="Untouched candidates; thresholds from the attacker's calibration only."><MembershipSummary rec={rec} /></Panel>
           <div className="grid-2">
-            <Panel title="ROC curves (evaluation population)"><RocCurves rec={rec} /></Panel>
+            <Panel title={rec.evaluation_contract === "placebo" ? "Placebo curves (no member among the candidates)" : "ROC curves (evaluation population)"}><RocCurves rec={rec} /></Panel>
             <Panel title="Confusion matrices"><ConfusionMatrices rec={rec} /></Panel>
           </div>
           <div className="grid-2">

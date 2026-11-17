@@ -6,7 +6,7 @@
 MLBreak's ML04 lab measures whether a black-box attacker can tell, from a classifier's released predictions, if a
 given record was in its **training set**. The attacks run for real, are calibrated only on the attacker's own data,
 are evaluated on untouched members and non-members, and are recorded as verifiable, replayable evidence
-(`mlbreak.membership/v1`).
+(`mlbreak.membership/v2`; historical `v1` records remain loadable and verifiable — §10).
 
 Every number in this document was produced by the code in this repository: the seed-7 experiments of
 `python -m mlbreak demo --lab ml04`, and two 20-seed studies (`mlbreak member study --seeds 0-19`, with and without
@@ -84,7 +84,7 @@ identical in every numerical environment.
 | `shadow` | 2400 | attacker's shadow models (known in/out splits of 600/600) | attacker |
 | `calibration` | 1200 | attacker's reference models for threshold calibration (600/600 splits) | attacker |
 | `evaluation_non_members` | 600 | non-member pool of the final evaluation | evaluator only |
-| `decoy` | 600 | training set of the negative-control victim only | evaluator only |
+| `decoy` | 600 | training set of the placebo-control victim only | evaluator only |
 
 **Disjointness is verified, not assumed:** every record's float64 feature vector is hashed (SHA-256) and the record
 stores the number of duplicate records and the pairwise overlap of every pair of populations (all 0;
@@ -104,10 +104,10 @@ served through the same `MembershipService` interface (batch of records in, one 
 |---|---|---|---|
 | `random-forest-overfit` | 100 fully grown trees, `min_samples_leaf = 1`, `max_features = sqrt` | `victim_train` | 1.000 / 0.725 (gap 0.275) |
 | `logreg-l2` | logistic regression, L2, C = 1.0 | `victim_train` | 0.727 / 0.740 (gap −0.013) |
-| `random-forest-decoy` | same as the overfit forest | `decoy` — **negative control** | 1.000 / 0.702 |
+| `random-forest-decoy` | same as the overfit forest | `decoy` — **placebo control** (no candidate is a member) | 1.000 / 0.702 |
 
-We do not assume any model leaks; leakage is measured. The logistic regression is a lower-capacity comparison, not a
-guaranteed non-leaking control (see §9).
+We do not assume any model leaks; leakage is measured. The logistic regression is the **low-leakage reference**
+(real members, low capacity), not a guaranteed non-leaking control (see §9).
 
 ## 5. Attacks
 
@@ -191,6 +191,14 @@ numerator, denominator, population and definition.
 | `train_accuracy`, `test_accuracy`, `generalization_gap`, `test_roc_auc`, `consumer_decision_accuracy`, `released_brier_score` | victim utility |
 | `queries`, `query_budget_utilisation` | one victim query per candidate, against `query_budget` |
 | `<attack>_defense_reduction_p_value`, `_correctness_reduction`, `_undefended_membership_accuracy` | defend only: paired over the same candidates (one-sided exact McNemar) |
+| `evaluation_contract`, `actual_member_fraction` | v2: `membership` or `placebo`; actual training members / candidates |
+| `<attack>_placebo_auc`, `_placebo_p_value`, `_placebo_advantage`, `_placebo_calls`, `_placebo_roc_curve`, `placebo_discrimination_claimed` | **placebo contract only**: population discrimination between placebo group A (victim-training pool, not trained on) and group B (evaluation pool) — never a membership metric |
+
+**Labels.** In schema v2 every ordinary membership metric uses the candidate's ACTUAL membership (`truth.in_training`),
+never a designated group. When the candidates contain no actual member (placebo contract), every positive-class metric
+— AUC, TPR / recall, advantage, balanced accuracy, the leakage and Fisher tests, TPR at low FPR, projected precision —
+is `null` (undefined) and `leakage_claimed` is `null` with status `undefined`; the false-positive metrics are measured
+on the 500 real non-members. Undefined values are never replaced by 0 or 0.5.
 
 Precision depends on prevalence: at seed 7 the threshold attack's precision is 75.2% (230/306) at a 50% prevalence,
 a projected 25.2% at 10% and 3.0% at 1% — most records called "member" would be false discoveries when members are
@@ -251,24 +259,76 @@ of the training set. Two neighbouring training sets can therefore produce differ
 attacks use; it does not bound what any attack can learn. This output restriction is **not differential privacy**, and
 neither are regularisation or complexity reduction. No DP training mechanism (e.g. DP-SGD) is implemented in this lab.
 
-## 9. Negative controls
+## 9. Controls: placebo and low-leakage reference
 
-* **Decoy victim** (`random-forest-decoy`): the same overfitting recipe trained on the disjoint `decoy` population, so
-  **no** evaluation candidate is in its training set (`in_training = false` for every candidate). Same candidates,
-  same attacks. It is as overfit as the real victim (gap 0.298 at seed 7), so a null result is due to non-membership,
-  not to a weaker model. Seed 7: threshold AUC 0.498, shadow AUC 0.505, no claim (MLB-REG-023).
-  Over 20 seeds: AUC 0.451–0.544 (both attacks) and **0/20** claims with the label known; with the label unknown AUC
-  0.438–0.572 and **2/20** claims. With α = 0.05 (Bonferroni-split across two attacks), at most about 1 false claim in
-  20 seeds is expected under the null; 2 of 20 is within chance (P ≈ 0.26), and it is reported here rather than hidden. A single-seed
-  leakage claim is evidence, not proof.
-* **Logistic regression**: its training records ARE members, but its capacity is low (gap ≈ 0). AUC 0.438–0.557 over
-  20 seeds (both attacks, both studies); leakage claimed on 2/20 seeds in each study. We report it as "no material leakage measured by these
-  attacks", not as "no leakage".
-* The **no-signal baseline** (always guessing the larger group; advantage 0) is reported in every record.
+### Root cause of the v1 decoy semantics (corrected in schema v2)
+
+In schema v1, `derive_membership_metrics` labelled candidates with their **designated** group (`truth.group`: drawn
+from the `victim_train` pool or from the evaluation pool). For the overfit and logistic-regression victims this equals
+actual membership. For the decoy victim it does not: the decoy is trained on the disjoint `decoy` population, so
+`in_training` was correctly `false` for every candidate, yet "membership" AUC, TPR and the leakage test were computed
+as if the `victim_train`-pool candidates were members. The decoy experiment was therefore a valid **placebo
+population-discrimination** experiment reported under membership metric names. Its numbers were not wrong as placebo
+numbers (they are identical under v2), but they were labelled as membership evidence.
+
+Schema v2 separates three notions in every record:
+
+| Notion | Field | Used for |
+|---|---|---|
+| actual training membership | `truth.in_training` | every ordinary membership metric |
+| designated candidate group / source pool | `truth.group`, `truth.population` | candidate selection, provenance |
+| placebo group assignment | `truth.placebo_group` (`A` / `B`; placebo contract only) | `*_placebo_*` metrics only |
+
+### Placebo control (`random-forest-decoy`, contract `placebo`)
+
+The same overfitting recipe trained on the disjoint `decoy` population: **no** candidate is a training member
+(`actual_member_fraction` = 0/500). Same candidates, same attacks, same calibration. Under the placebo contract:
+
+* membership AUC, TPR, advantage and the membership-leakage test are **undefined** — there is no member to detect, and
+  no membership-leakage claim (positive or negative) is ever made from this experiment;
+* the false-positive metrics are defined and meaningful: how many real non-members the calibrated attack accuses.
+  Seed 7: 0.8% (threshold) and 2.8% (shadow) at the 1%-FPR threshold; 20-seed maximum 2.2% / 3.0%;
+* the **placebo analysis** asks whether the attack separates placebo group A (from the pool the real victim was
+  trained on — but not this victim) from group B (evaluation pool). Seed 7: placebo AUC 0.498 / 0.505, no placebo
+  discrimination claimed. 20 seeds: placebo AUC 0.451–0.544 and 0/20 claims with the label known; 0.438–0.572 and
+  **2/20** claims with the label unknown. At α = 0.05 (Bonferroni-split over two attacks) at most about one false
+  claim per 20 seeds is expected; 2/20 is within chance (P ≈ 0.26). A placebo claim would point to a population
+  difference or pipeline leak, never to membership leakage.
+* The decoy is as overfit as the real victim (gap 0.298), so its null result is due to non-membership, not to a
+  weaker model (MLB-REG-023).
+
+### Low-leakage reference (`logreg-l2`, contract `membership`)
+
+A genuine membership evaluation with real members (250) and real non-members (250), the same attacker knowledge,
+outputs and calibration as MLB-REG-019, against a low-capacity victim (gap −0.013 at seed 7). Seed 7: AUC 0.511 /
+0.468, advantage +0.024 / +0.012, no leakage claimed. 20 seeds (both studies): AUC 0.438–0.557, threshold advantage
+−0.044 to +0.060, and **leakage claimed on 2/20 seeds in each study**. Its low leakage is therefore an empirical
+result for this model and data, **not** a guarantee: MLB-REG-026 bounds the measured AUC and advantage and never
+asserts "no leakage".
+
+The **no-signal baseline** (always guessing the larger group; advantage 0) is reported in every record.
 
 ## 10. Evidence and reproducibility
 
-Record family `mlbreak.membership/v1` (new; no existing schema version changed). Each record stores:
+### Schema versions and compatibility
+
+| Version | Labels of membership metrics | Status |
+|---|---|---|
+| `mlbreak.membership/v1` | designated group (`truth.group`) | historical: loaded with the unchanged v1 model, so its dumps and `record_sha256` are unchanged; verified under v1 rules; v1 decoy records are flagged by an `evaluation_contract` check (status *skipped*, detail "decoy record — placebo semantics") and in their report |
+| `mlbreak.membership/v2` | actual membership (`truth.in_training`) + explicit `evaluation_contract` | written by every new experiment |
+
+Compatibility rules (tested against committed v1 fixtures in `tests/fixtures/membership_v1/`):
+
+* a v1 record is never reinterpreted: its stored metrics keep their stored meaning and fingerprints;
+* replaying a v1 record writes a v2 record and compares only what is comparable across the change — status, request,
+  dataset, victim, calibration, shadow models, attacker outputs and ground truth — with a note; metrics and results
+  fingerprints are not compared;
+* a v1 attack cannot be the parent of a new defend experiment (paired correctness would mix label semantics): re-run
+  the attack;
+* multi-seed study reports move to `mlbreak.membership-study/v2` (rows carry the contract and placebo values); v1
+  study reports still verify, because their summary is re-derived with the original rules.
+
+Each record stores:
 
 * the victim configuration, recipe and artifact hash, its training population and that population's hash;
 * the dataset generator, population sizes and fingerprints, and the row-level disjointness check;
@@ -289,7 +349,10 @@ Record family `mlbreak.membership/v1` (new; no existing schema version changed).
 `mlbreak check <id>` / `GET /api/experiments/<id>/verify` re-derive, without re-running any model: every threshold
 score from the stored released output, every operating point from the stored calibration data, every decision, the
 query order and budget, policy-valid outputs, ground-truth consistency (group ⇔ population; no training member for the
-decoy) and every metric. Shadow meta-classifier scores cannot be re-derived without re-training; they are covered by
+decoy) and every metric. It also confirms that **membership labels match the victim's actual training population**:
+the deterministic dataset is regenerated (data only, no model), every candidate's stored features and label must equal
+its source record, `in_training` must equal "source population = the victim's training population", the victim's
+training-population hash must match, and (v2) the contract must be `placebo` exactly when no candidate is a member. Shadow meta-classifier scores cannot be re-derived without re-training; they are covered by
 the results fingerprint and by **exact replay** (`mlbreak replay <id>`, refused if verification fails; compares
 dataset, victim, calibration, shadow, attacker-output, metrics and results fingerprints). Integrity is not
 authenticity (see [reproducibility](reproducibility.md#integrity-is-not-authenticity)).
@@ -305,12 +368,20 @@ re-derived on verification (`MLB-MIS-<12 hex>` under `<data dir>/membership_stud
 | **MLB-REG-020** | threshold calibration without evaluation labels: attacker independence (permuted ground truth ⇒ identical outputs; populations disjoint), disjointness = 1, evaluation FPR ≤ 3% at the 1%-calibrated threshold (0.4%), balanced point transfers (accuracy ≥ 0.75, 0.808) |
 | **MLB-REG-021** | shadow attack learns from auxiliary membership only (label unknown): attacker independence, shadow AUC ≥ 0.8 (0.880; 0.836–0.912), p ≤ 0.001 |
 | **MLB-REG-022** | leaf-size regularisation: defended AUC ≤ 0.65 for both attacks (0.568 / 0.539), paired reduction p ≤ 0.001, gap ≤ 0.15 (0.085), held-out accuracy ≥ 0.67 (0.703), **and** a residual-signal canary AUC ≥ 0.52 |
-| **MLB-REG-023** | negative control: no leakage claim, AUC ≤ 0.6 for both attacks, advantage ≤ 0.15, while the decoy still overfits (gap ≥ 0.2) |
+| **MLB-REG-023** | **placebo control** (revised for schema v2): 0 actual members, no placebo discrimination claimed, placebo AUC ≤ 0.6 for both attacks, placebo advantage ≤ 0.15, ≤ 3% of real non-members accused at the 1%-FPR threshold (0.8%), decoy still overfits (gap ≥ 0.2) |
 | **MLB-REG-024** | evidence integrity + lineage + bit-identical replay; query budget enforced (a budget one below the candidate count is refused and the failed record verifies); ≤ 1 query per candidate; complexity reduction significantly reduces the shadow attack with held-out accuracy ≥ 0.65 |
+| **MLB-REG-026** | **low-leakage reference** with real members: actual members = 50%, AUC ≤ 0.6 for both attacks (0.511 / 0.468), advantage ≤ 0.15, gap ≤ 0.1, held-out accuracy ≥ 0.68 — no invariant asserts "no leakage" (claimed on 2/20 seeds) |
 | **MLB-REG-025** | documented defense failure: label-only output reduces but does not stop a label-aware attacker (advantage ≥ 0.2, 0.280; leakage still claimed) while consumer decisions are unchanged |
 
 Thresholds were set from the seed-7 values and the 20-seed ranges, with margins inside the observed range; the
 ML01–ML03 cases (MLB-REG-001…018) are unchanged.
+
+**Change to MLB-REG-023 (schema v2).** Its v1 invariants (`leakage_claimed == 0`, `threshold_roc_auc ≤ 0.6`,
+`shadow_roc_auc ≤ 0.6`, `threshold_membership_advantage ≤ 0.15`) evaluated placebo semantics under membership names;
+under v2 those metrics are undefined for the decoy, and an invariant on an undefined value fails. They were replaced by
+the same bounds on the correctly named placebo metrics (not weakened), plus two new checks (zero actual members;
+false accusations of real non-members ≤ 3%). The genuine low-leakage reference with real members is the new
+MLB-REG-026.
 
 ## 12. Running it
 
@@ -339,6 +410,8 @@ API (all evaluator-facing, tag `ml04`): `POST /api/experiments/membership/{basel
 * **TPR at 1% FPR rests on 1 200 calibration non-members and 250 evaluation non-members.** The evaluation FPR at the
   calibrated threshold is a 250-sample estimate (Wilson interval reported); the 20-seed range of TPR at 1% FPR is
   4.0–23.2%.
+* **Placebo, not a calibrated null distribution.** The decoy tests one alternative population; it detects pipeline
+  leaks and population shifts between the two pools, not every way a membership claim could be spurious.
 * **Single-seed regression thresholds.** The cases pin seed 7; the multi-seed study shows where seeds differ (e.g. the
   TPR bound in MLB-REG-019 is seed-specific).
 * **No formal privacy.** No differential-privacy mechanism, no bound on what an attacker can learn; regularisation

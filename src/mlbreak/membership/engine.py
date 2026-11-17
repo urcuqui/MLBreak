@@ -11,6 +11,11 @@ Evaluations:
   reference and shadow models are retrained with the defended recipe and see outputs through the same policy. Same
   candidates and attack configuration as the parent; paired per candidate.
 
+Evaluation contract (schema v2): ``membership`` when the candidates contain actual training members of the victim
+(ordinary membership metrics use ``truth.in_training``), ``placebo`` for the decoy victim, whose training set contains
+no candidate (membership metrics on positives are undefined; a separate placebo analysis compares the two designated
+source pools). Historical v1 records are replayed by comparing only what is comparable across the schema change.
+
 Ground-truth isolation: this engine is the only place that knows which candidate is a member. It builds an
 :class:`~.attacks.AttackerKnowledge` (candidate features, optional labels, auxiliary populations, the training recipe)
 and a counting oracle, runs the attacks, and attaches :class:`~.schemas.MembershipTruth` only afterwards. Candidate
@@ -34,15 +39,21 @@ from .defenses import MembershipService, counting_oracle, describe_policy
 from .integrity import attacker_side_sha256, results_fingerprint
 from .metrics import ATTACKS, derive_membership_metrics
 from .models import VICTIMS, Recipe, apply_defense, victim_model, victim_recipe
-from .schemas import (SCENARIO_ID, AttackCalibration, AttackDecision, AttackerObservation, CandidateResult,
-                      MembershipAttackConfig, MembershipAttackRequest, MembershipBaselineRequest,
-                      MembershipDefendRequest, MembershipRecord, MembershipTruth, UtilityRow, policy_of)
+from .schemas import (MEMBERSHIP_SCHEMA_V1, SCENARIO_ID, AttackCalibration, AttackDecision, AttackerObservation,
+                      CandidateResultV2, MembershipAttackConfig, MembershipAttackRequest, MembershipBaselineRequest,
+                      MembershipDefendRequest, MembershipRecord, MembershipRecordV2, MembershipTruthV2, UtilityRow,
+                      policy_of)
 from .shadow import shadow_attack
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..experiments import ExperimentEngine
 
 FULL = {"kind": "full_probability"}
+
+
+def contract_for(model_id: str) -> str:
+    """``placebo`` when the victim's training population contributes no candidate (decoy), else ``membership``."""
+    return "membership" if VICTIMS[model_id]["population"] == "victim_train" else "placebo"
 
 
 class MembershipLab:
@@ -74,6 +85,7 @@ class MembershipLab:
         else:
             new = self.run_defend(MembershipDefendRequest.model_validate(original.request), replay_of=oid)
         o, n = original.reproducibility, new.reproducibility
+        legacy = original.schema_version == MEMBERSHIP_SCHEMA_V1
         pairs = [("status", original.status, new.status),
                  ("config_sha256", o.get("config_sha256"), n.get("config_sha256")),
                  ("dataset_sha256", sha256_json({k: v for k, v in original.dataset.items() if k.endswith("_sha256")}),
@@ -82,15 +94,25 @@ class MembershipLab:
                  ("calibration_sha256", sha256_json(original.calibration), sha256_json(new.calibration)),
                  ("shadow_sha256", sha256_json(original.shadow), sha256_json(new.shadow)),
                  ("attacker_outputs_sha256", attacker_side_sha256(original.candidates),
-                  attacker_side_sha256(new.candidates)),
-                 ("metrics_sha256", o.get("metrics_sha256"), n.get("metrics_sha256")),
-                 ("results_sha256", o.get("results_sha256"), n.get("results_sha256"))]
+                  attacker_side_sha256(new.candidates))]
+        truth = lambda r: sha256_json([(c.candidate_id, c.truth.group, c.truth.in_training, c.truth.population,  # noqa: E731
+                                        c.truth.population_index) for c in r.candidates])
+        if legacy:  # schema v1 → v2: metrics changed meaning (contract), so only comparable fields are compared
+            pairs.append(("ground_truth_sha256", truth(original), truth(new)))
+        else:
+            pairs += [("metrics_sha256", o.get("metrics_sha256"), n.get("metrics_sha256")),
+                      ("results_sha256", o.get("results_sha256"), n.get("results_sha256"))]
         checks = [{"check": k, "original": a, "replay": b, "match": a == b} for k, a, b in pairs]
         env = environment_differences(o, n)
         identical = all(c["match"] for c in checks)
+        notes = environment_note(env, identical)
+        if legacy:
+            notes.insert(0, "Original record uses mlbreak.membership/v1 (metrics against designated groups); the replay "
+                            "is written as v2 with an explicit evaluation contract. Victim, calibration, shadow models, "
+                            "attacker outputs and ground truth are compared; metrics/results fingerprints are not "
+                            "comparable across the schema change.")
         return {"original_experiment_id": oid, "replay_experiment_id": new.experiment_id, "identical": identical,
-                "checks": checks, "original_integrity": integrity, "environment_differences": env,
-                "notes": environment_note(env, identical)}
+                "checks": checks, "original_integrity": integrity, "environment_differences": env, "notes": notes}
 
     # ------------------------------------------------- multi-seed study (evaluator-facing)
     def study(self, req):
@@ -182,7 +204,7 @@ class MembershipLab:
                                        if done else None)
             repro["replay_command"] = f"mlbreak replay {exp_id}"
             repro["verify_command"] = f"mlbreak check {exp_id}"
-            rec = MembershipRecord(experiment_id=exp_id, created_at=_now(), mode=mode, status=status, error=error,
+            rec = MembershipRecordV2(experiment_id=exp_id, created_at=_now(), mode=mode, status=status, error=error,
                                    replay_of=replay_of, request=req.model_dump(mode="json"), reproducibility=repro,
                                    duration_ms=round((time.monotonic() - started) * 1000, 2), **body)
             rec.reproducibility["record_sha256"] = record_sha256(rec)
@@ -201,10 +223,10 @@ class MembershipLab:
                 "model": {"model_id": model_id, "description": v["description"], "training_population": v["population"],
                           "training_population_sha256": ds[v["population"]].sha256(), **victim.describe()},
                 "target_system": MembershipService(victim, policy).describe(), "dataset": ds.describe(), "seed": seed,
-                "output_policy": policy}
+                "output_policy": policy, "evaluation_contract": contract_for(model_id)}
 
     @staticmethod
-    def _candidate_arrays(ds, req) -> tuple[np.ndarray, np.ndarray, list[MembershipTruth], list[str]]:
+    def _candidate_arrays(ds, req) -> tuple[np.ndarray, np.ndarray, list[MembershipTruthV2], list[str]]:
         sel = req.candidates
         mem, non = select_candidates(req.seed, sel.n_members, sel.n_non_members)
         decoy = VICTIMS[req.model_id]["population"] != "victim_train"
@@ -213,7 +235,9 @@ class MembershipLab:
         rows = [rows[int(k)] for k in order]
         X = np.array([ds[p].X[i] for _, p, i in rows], dtype=np.float64).reshape(len(rows), -1)
         y = np.array([ds[p].y[i] for _, p, i in rows], dtype=np.int64)
-        truths = [MembershipTruth(group=g, in_training=(g == "member" and not decoy), population=p, population_index=i)
+        truths = [MembershipTruthV2(group=g, in_training=(g == "member" and not decoy), population=p,
+                                    population_index=i,
+                                    placebo_group=(("A" if p == "victim_train" else "B") if decoy else None))
                   for g, p, i in rows]
         return X, y, truths, [f"C-{k:04d}" for k in range(len(rows))]
 
@@ -233,11 +257,10 @@ class MembershipLab:
         cfg: MembershipAttackConfig = req.attack
         X, y, truths, ids = self._candidate_arrays(ds, req)
         if permute_truth:  # evaluator-side only (attacker_independence): the attack must not notice
-            perm = np.random.default_rng([req.seed, 4999]).permutation(len(truths))
-            groups = [truths[int(k)].group for k in perm]
-            if groups == [t.group for t in truths]:
-                groups = groups[1:] + groups[:1]
-            truths = [t.model_copy(update={"group": g}) for t, g in zip(truths, groups)]
+            perm = [int(k) for k in np.random.default_rng([req.seed, 4999]).permutation(len(truths))]
+            if [truths[k].group for k in perm] == [t.group for t in truths]:
+                perm = perm[1:] + perm[:1]
+            truths = [truths[k] for k in perm]
         know = AttackerKnowledge(candidate_ids=tuple(ids), X=X, y=y if cfg.label_known else None, recipe=rec_recipe,
                                  policy=dict(policy), n_train=N_TRAIN, shadow=ds["shadow"],
                                  calibration=ds["calibration"], seed=req.seed)
@@ -248,7 +271,7 @@ class MembershipLab:
         ref = reference_data(know, cfg.n_reference_models, deadline)
         th_cal, th_dec = threshold_attack(know, released, ref, cfgd)
         sh_prov, sh_cal, sh_dec = shadow_attack(know, released, ref, cfgd, deadline)
-        cands = [CandidateResult(candidate_id=ids[i], truth=truths[i],
+        cands = [CandidateResultV2(candidate_id=ids[i], truth=truths[i],
                                  observation=AttackerObservation(features=X[i].tolist(),
                                                                  label=int(y[i]) if cfg.label_known else None,
                                                                  released_output=float(released[i]), query_index=i + 1),
@@ -310,6 +333,9 @@ class MembershipLab:
             raise InvalidExperiment(f"parent {parent_id} is not an ML04 membership experiment")
         if parent.status != "completed":
             raise InvalidExperiment(f"parent {parent_id} did not complete (status {parent.status})")
+        if parent.schema_version == MEMBERSHIP_SCHEMA_V1:
+            raise InvalidExperiment(f"parent {parent_id} uses mlbreak.membership/v1 (metrics against designated groups); "
+                                    "re-run the attack to obtain a v2 parent with an explicit evaluation contract")
         if parent.mode != "attack" or parent.evaluation != "membership_inference":
             raise InvalidExperiment(f"parent {parent_id} must be a membership attack against the undefended victim "
                                     f"(got mode={parent.mode}, evaluation={parent.evaluation})")
@@ -319,14 +345,15 @@ class MembershipLab:
     def _metrics(self, evaluation: str, req, cands, utility, calibration, ds) -> dict[str, Any]:
         budget = req.attack.query_budget if hasattr(req, "attack") else None
         return derive_membership_metrics(evaluation, cands, utility, req.candidates.operational_prevalences,
-                                         calibration, budget, ds.describe()["disjointness"]["disjoint"])
+                                         calibration, budget, ds.describe()["disjointness"]["disjoint"],
+                                         contract_for(req.model_id))
 
     def _baseline(self, req: MembershipBaselineRequest, deadline: float) -> dict[str, Any]:
         ds = load_membership_dataset(req.seed)
         victim = victim_model(req.model_id, req.seed, victim_recipe(req.model_id))
         _check_deadline(deadline)
         _, _, truths, ids = self._candidate_arrays(ds, req)
-        cands = [CandidateResult(candidate_id=i, truth=t) for i, t in zip(ids, truths)]
+        cands = [CandidateResultV2(candidate_id=i, truth=t) for i, t in zip(ids, truths)]
         utility = self._utility_rows(ds, req.model_id, victim, FULL)
         return {**self._common(req.model_id, req.seed, victim, FULL, ds), "evaluation": "clean",
                 "intentionally_vulnerable": True, "attacker_capabilities": None, "attack_config": None,
@@ -372,9 +399,8 @@ class MembershipLab:
         cands, cal, shadow, _ = self._run_attack(ds, preq, rec_recipe, policy, victim, deadline)
         if [(c.candidate_id, c.truth) for c in cands] != [(c.candidate_id, c.truth) for c in parent.candidates]:
             raise InvalidExperiment("parent candidates do not match the regenerated evaluation population")
-        for c, p in zip(cands, parent.candidates):
-            member = p.truth.group == "member"
-            c.undefended_correct = {a: getattr(p, a).member_balanced == member for a in ATTACKS}
+        for c, p in zip(cands, parent.candidates):  # correctness against ACTUAL membership (v2 parents only)
+            c.undefended_correct = {a: getattr(p, a).member_balanced == p.truth.in_training for a in ATTACKS}
         utility = self._utility_rows(ds, preq.model_id, victim, policy)
         lineage = {
             "relation": "recalibrated_membership_attack_on", "parent_experiment_id": parent.experiment_id,

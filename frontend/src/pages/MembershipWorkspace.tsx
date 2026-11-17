@@ -98,8 +98,8 @@ export function MembershipWorkspace() {
           <label>Victim model
             <select value={ctx.model_id} onChange={(e) => changeCtx({ ...ctx, model_id: e.target.value as MembershipModelId })}>
               <option value="random-forest-overfit">Random forest (intentionally overfit)</option>
-              <option value="logreg-l2">Logistic regression (L2, lower capacity)</option>
-              <option value="random-forest-decoy">Negative control (no candidate is a member)</option>
+              <option value="logreg-l2">Low-leakage reference: logistic regression (real members)</option>
+              <option value="random-forest-decoy">Placebo control: decoy (no candidate is a member)</option>
             </select>
           </label>
           <label>Seed
@@ -207,7 +207,7 @@ export function MembershipWorkspace() {
             <>
               <Panel title="Final evaluation" subtitle="Untouched candidates; thresholds from calibration only."><MembershipSummary rec={attack} /></Panel>
               <div className="grid-2">
-                <Panel title="ROC curves (evaluation population)"><RocCurves rec={attack} /></Panel>
+                <Panel title={attack.evaluation_contract === "placebo" ? "Placebo curves (no member among the candidates)" : "ROC curves (evaluation population)"}><RocCurves rec={attack} /></Panel>
                 <Panel title="Confusion matrices"><ConfusionMatrices rec={attack} /></Panel>
               </div>
               <div className="grid-2">
@@ -277,7 +277,7 @@ export function MembershipWorkspace() {
       )}
 
       {tab === "evidence" && (
-        <Panel title="Session evidence" subtitle="JSON (mlbreak.membership/v1), Markdown report and CSV (one row per candidate) for every experiment.">
+        <Panel title="Session evidence" subtitle="JSON (mlbreak.membership/v2, with its evaluation contract), Markdown report and CSV (one row per candidate) for every experiment.">
           <EvidenceTable disabled={!!busy} headline={{ label: "Membership acc. (threshold)", key: "threshold_membership_accuracy" }}
             rows={[["baseline", baseline], ["attack (membership inference)", attack],
               ...defended.map((r) => [`adaptive · ${defenseLabel(r.defense_config)}`, r] as [string, MembershipRecord])]} />

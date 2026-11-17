@@ -62,7 +62,7 @@ export interface ExperimentSummary {
   output_policy?: string | null; attribute_inference_accuracy?: number | null; baseline_inference_accuracy?: number | null;
   inference_advantage?: number | null;
   membership_auc?: number | null; shadow_membership_auc?: number | null; membership_advantage?: number | null;
-  generalization_gap?: number | null;
+  generalization_gap?: number | null; evaluation_contract?: string | null; placebo_auc?: number | null;
   max_edit_distance?: number | null; query_budget?: number | null;
   poison_fraction?: number | null; target_class?: number | null;
 }
@@ -354,8 +354,13 @@ export type MembershipDefense =
   | { kind: "output_restriction"; policy: RestrictivePolicy };
 export interface AttackDecision { score: number; class_key: number | null; member_balanced: boolean; member_low_fpr: boolean | null }
 export interface MembershipTruth {
-  group: "member" | "non_member"; in_training: boolean; population: "victim_train" | "evaluation_non_members";
+  /** designated source pool ("member" = drawn from the victim-training pool); NOT actual membership in schema v2 */
+  group: "member" | "non_member";
+  /** ACTUAL membership in this victim's training set (label of ordinary membership metrics in schema v2) */
+  in_training: boolean; population: "victim_train" | "evaluation_non_members";
   population_index: number;
+  /** placebo contract only: A = victim-training pool, B = evaluation pool; absent in schema v1 */
+  placebo_group?: "A" | "B" | null;
 }
 export interface MembershipCandidate {
   candidate_id: string; truth: MembershipTruth;
@@ -373,6 +378,8 @@ export interface AttackCalibration {
 export interface MembershipRecord {
   schema_version: string; family: "membership"; experiment_id: string; created_at: string;
   mode: "baseline" | "attack" | "defend"; evaluation: "clean" | "membership_inference" | "adaptive_membership_inference";
+  /** schema v2 only; v1 records computed metrics against the designated group */
+  evaluation_contract?: "membership" | "placebo";
   status: "completed" | "failed"; error: string | null; intentionally_vulnerable: boolean; scenario_id: string;
   owasp: { id: string; name: string; taxonomy: string; taxonomy_version: string; reference_url: string };
   attacker_capabilities: Record<string, unknown> | null;

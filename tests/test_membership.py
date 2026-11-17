@@ -132,13 +132,55 @@ def test_overfit_victim_leaks_and_metrics_are_consistent(lab):
     assert v(rec, "leakage_claimed") == 1.0 and rec.metrics["queries"]["total"] == 500
 
 
-def test_negative_control_does_not_claim_leakage(lab):
+def test_decoy_is_an_explicit_placebo_with_no_actual_member(lab):
     _, recs = lab
     rec = recs["decoy"]
-    assert not any(c.truth.in_training for c in rec.candidates)
-    assert v(rec, "leakage_claimed") == 0.0 and v(rec, "generalization_gap") >= 0.2
+    assert rec.schema_version == "mlbreak.membership/v2" and rec.evaluation_contract == "placebo"
+    assert not any(c.truth.in_training for c in rec.candidates)                       # zero actual members
+    assert v(rec, "actual_member_fraction") == 0.0 and rec.metrics["n_members"] == 0
+    assert {c.truth.placebo_group for c in rec.candidates} == {"A", "B"}
+    assert all((c.truth.placebo_group == "A") == (c.truth.population == "victim_train") for c in rec.candidates)
     for a in ("threshold", "shadow"):
-        assert abs(v(rec, f"{a}_roc_auc") - 0.5) < 0.1
+        # positive-class membership metrics are UNDEFINED, never computed from placebo group labels
+        for k in ("roc_auc", "membership_recall", "membership_advantage", "tpr_at_low_fpr", "leakage_p_value",
+                  "balanced_accuracy", "operating_point_p_value"):
+            assert v(rec, f"{a}_{k}") is None, (a, k)
+        assert rec.metrics[f"{a}_roc_curve"]["points"] is None
+        assert all(p["precision"] is None for p in rec.metrics[f"{a}_operational_precision"]["values"])
+        # false accusations of real non-members ARE defined
+        assert rec.metrics[f"{a}_false_positive_rate"]["denominator"] == 500
+        # the placebo analysis is separate and labelled as such
+        pl = rec.metrics[f"{a}_placebo_auc"]
+        assert abs(pl["value"] - 0.5) < 0.1 and pl["population"].startswith("PLACEBO")
+    # no unsupported claim: the membership claim is undefined and placebo discrimination is not claimed
+    assert rec.metrics["leakage_claimed"]["value"] is None and rec.metrics["leakage_claimed"]["status"] == "undefined"
+    assert v(rec, "placebo_discrimination_claimed") == 0.0 and v(rec, "generalization_gap") >= 0.2
+
+
+def test_ordinary_membership_metrics_use_actual_membership(lab):
+    from mlbreak.membership.metrics import derive_membership_metrics
+    _, recs = lab
+    rec = recs["attack"]
+    assert rec.evaluation_contract == "membership" and v(rec, "actual_member_fraction") == 0.5
+    args = (rec.evaluation, None, rec.utility, [0.5, 0.1, 0.01], rec.calibration, 1200, True)
+    # relabel the DESIGNATED groups while keeping actual membership: v2 metrics must not move, v1 semantics would
+    flipped = [c.model_copy(update={"truth": c.truth.model_copy(update={"group": "non_member" if c.truth.group == "member"
+                                                                        else "member"})}) for c in rec.candidates]
+    a2 = list(args)
+    a2[1] = flipped
+    assert derive_membership_metrics(*a2, contract="membership") == rec.metrics
+    assert derive_membership_metrics(*a2, contract=None)["threshold_roc_auc"]["value"] < 0.2  # v1 rule follows groups
+
+
+def test_low_leakage_reference_has_real_members_and_is_measured(engine):
+    rec = engine.membership.run_attack(MembershipAttackRequest(
+        model_id="logreg-l2", candidates=CandidateSelection(n_members=80, n_non_members=80),
+        attack=MembershipAttackConfig(n_shadow_models=2)))
+    assert rec.evaluation_contract == "membership" and v(rec, "actual_member_fraction") == 0.5
+    assert all(c.truth.in_training == (c.truth.population == "victim_train") for c in rec.candidates)
+    for a in ("threshold", "shadow"):   # measured, not assumed: the values exist and are near chance here
+        assert v(rec, f"{a}_roc_auc") is not None and v(rec, f"{a}_leakage_p_value") is not None
+    assert rec.metrics["leakage_claimed"]["value"] in (0.0, 1.0)
 
 
 def test_baseline_has_no_attacker_output_and_reports_no_signal(lab):
@@ -244,6 +286,9 @@ def test_query_budget_is_enforced(engine):
     lambda d: d["calibration"]["attacks"]["threshold"]["is_member"].__setitem__(0, False),
     lambda d: d["metrics"]["threshold_roc_auc"].update(value=0.99),
     lambda d: d["candidates"][5]["observation"].update(released_output=0.123456),
+    lambda d: d["candidates"][2]["truth"].update(in_training=not d["candidates"][2]["truth"]["in_training"]),
+    lambda d: d["candidates"][7]["observation"]["features"].__setitem__(0, 0.5),
+    lambda d: d.update(evaluation_contract="placebo"),
 ])
 def test_tampered_evidence_is_rejected_and_not_replayed(lab, edit):
     eng, recs = lab
@@ -309,7 +354,7 @@ def test_membership_api_contract(client):
     assert client.post("/api/experiments/membership/attack", json={"seed": -1}).status_code == 422
     assert "## 7. Integrity verification" in client.get(f"/api/experiments/{eid}/report.md").text
     csv = client.get(f"/api/experiments/{eid}/samples.csv").text.splitlines()[0]
-    assert "threshold_score" in csv and "eval_group" in csv
+    assert "threshold_score" in csv and "eval_in_training" in csv and "eval_designated_group" in csv
     lst = {e["experiment_id"]: e for e in client.get("/api/experiments").json()}
     assert lst[eid]["family"] == "membership" and lst[eid]["membership_auc"] is not None
     assert client.get("/api/membership/study/MLB-MIS-../../x").status_code == 404
@@ -340,7 +385,8 @@ def test_record_family_round_trips_and_older_families_still_parse(lab):
     from mlbreak.evidence import parse_record
     eng, recs = lab
     data = json.loads(eng.store.json_path(recs["attack"].experiment_id).read_text())
-    assert isinstance(parse_record(data), MembershipRecord) and data["schema_version"] == "mlbreak.membership/v1"
+    assert isinstance(parse_record(data), MembershipRecord) and data["schema_version"] == "mlbreak.membership/v2"
+    assert data["evaluation_contract"] == "membership"
 
 
 # ------------------------------------------------------------------ UI and docs
@@ -355,25 +401,81 @@ def _top_level_fields(body: str) -> set[str]:
 
 
 def test_frontend_calls_existing_routes_and_types_match_records(client):
-    from mlbreak.membership.schemas import CandidateResult, MembershipTruth
+    from mlbreak.membership.schemas import CandidateResultV2, MembershipRecordV2, MembershipTruthV2
     api = (PROJECT_ROOT / "frontend" / "src" / "api.ts").read_text()
     routes = {r.path for r in client.app.routes}
     for path in ("/api/experiments/membership/baseline", "/api/experiments/membership/attack",
                  "/api/experiments/membership/defend"):
         assert path in api and path in routes, path
     types = (PROJECT_ROOT / "frontend" / "src" / "types.ts").read_text()
-    for model, iface in ((MembershipRecord, "MembershipRecord"), (CandidateResult, "MembershipCandidate"),
-                         (MembershipTruth, "MembershipTruth")):
+    for model, iface in ((MembershipRecordV2, "MembershipRecord"), (CandidateResultV2, "MembershipCandidate"),
+                         (MembershipTruthV2, "MembershipTruth")):
         body = types.split(f"export interface {iface} {{")[1].split("\n}")[0]
         fields = _top_level_fields(body)
         assert fields and fields <= set(model.model_fields), (iface, fields - set(model.model_fields))
     page = (PROJECT_ROOT / "frontend" / "src" / "pages" / "MembershipWorkspace.tsx").read_text()
     assert "evaluator" in page.lower() and "not differential privacy" in page
+    comp = (PROJECT_ROOT / "frontend" / "src" / "components" / "membership.tsx").read_text()
+    assert "placebo" in comp.lower() and "evaluation_contract" in comp
 
 
 def test_docs_cover_the_methodology():
     doc = (PROJECT_ROOT / "docs" / "ml04-membership-inference.md").read_text()
-    for needle in ("OWASP ML04", "## 2. Threat model", "calibration", "shadow", "negative control",
+    for needle in ("OWASP ML04", "## 2. Threat model", "calibration", "shadow", "Placebo control", "placebo contract",
+                   "Low-leakage reference", "Root cause", "### Schema versions and compatibility", "MLB-REG-026",
                    "not differential privacy", "ε = ∞", "MLB-REG-019", "MLB-REG-025", "Responsible use",
                    "Known limitations", "privacy–utility"):
         assert needle in doc, needle
+
+
+# ------------------------------------------------------------------ historical evidence and reproducibility
+FIXTURES = PROJECT_ROOT / "tests" / "fixtures" / "membership_v1"
+
+
+@pytest.fixture
+def v1_engine(tmp_path):
+    import shutil
+    store = EvidenceStore(tmp_path / "var")
+    for f in FIXTURES.glob("MLB-EXP-*.json"):
+        shutil.copy(f, store.dir / f.name)
+    return ExperimentEngine(store), json.loads((FIXTURES / "manifest.json").read_text())
+
+
+def test_historical_v1_records_load_and_verify_under_their_schema(v1_engine):
+    from mlbreak.integrity import record_sha256
+    from mlbreak.membership.schemas import MembershipRecordV2
+    eng, man = v1_engine
+    for name, m in man.items():
+        rec = eng.store.load(m["experiment_id"])
+        assert rec.schema_version == "mlbreak.membership/v1" and not isinstance(rec, MembershipRecordV2)
+        assert record_sha256(rec) == m["record_sha256"] and rec.reproducibility["results_sha256"] == m["results_sha256"]
+        report = eng.verify(m["experiment_id"])
+        assert report["ok"], [c for c in report["checks"] if c["status"] == "fail"]
+        contract = next(c for c in report["checks"] if c["check"] == "evaluation_contract")
+        assert contract["status"] == "skipped" and ("DECOY" in contract["detail"]) == (name == "decoy_attack")
+    assert "Schema v1 decoy record" in eng.report(man["decoy_attack"]["experiment_id"])
+
+
+def test_historical_v1_replay_and_defend(v1_engine):
+    eng, man = v1_engine
+    r = eng.replay(man["decoy_attack"]["experiment_id"])
+    assert r["identical"] and "ground_truth_sha256" in {c["check"] for c in r["checks"]}
+    assert "metrics_sha256" not in {c["check"] for c in r["checks"]} and "v1" in r["notes"][0]
+    new = eng.store.load(r["replay_experiment_id"])
+    assert new.schema_version == "mlbreak.membership/v2" and new.evaluation_contract == "placebo"
+    with pytest.raises(InvalidExperiment, match="v1"):
+        eng.membership.run_defend(MembershipDefendRequest(parent_experiment_id=man["rf_attack"]["experiment_id"]))
+
+
+def test_results_are_reproducible_across_seeds(engine):
+    def run(seed, model="random-forest-overfit"):
+        return engine.membership.run_attack(MembershipAttackRequest(
+            model_id=model, seed=seed, candidates=CandidateSelection(n_members=60, n_non_members=60),
+            attack=MembershipAttackConfig(n_shadow_models=1, n_reference_models=1)))
+    for seed in (3, 11):
+        a, b = run(seed), run(seed)
+        assert a.reproducibility["results_sha256"] == b.reproducibility["results_sha256"]
+        assert v(a, "threshold_roc_auc") > 0.7                      # the overfit victim leaks on every seed tried
+        d = run(seed, "random-forest-decoy")                         # the placebo never yields a membership claim
+        assert d.metrics["leakage_claimed"]["value"] is None and d.evaluation_contract == "placebo"
+    assert run(3).reproducibility["results_sha256"] != run(11).reproducibility["results_sha256"]

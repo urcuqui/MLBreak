@@ -71,6 +71,15 @@ def render_membership_markdown(rec: MembershipRecord, verification: dict | None 
                    f"meta-classifier `{mc['artifact_sha256'][:16]}…` trained on {mc['n_training_examples']} shadow "
                    f"examples ({mc['n_member_examples']} members), features {mc['features']}."]
     out: list[str] = []
+    contract = getattr(rec, "evaluation_contract", None)
+    if contract is None and rec.model.get("training_population") != "victim_train":
+        out += ["> **Schema v1 decoy record.** Its membership-named metrics were computed against DESIGNATED groups. No "
+                "candidate is a training member of this victim, so they are placebo population-discrimination metrics, "
+                "not membership metrics (see docs/ml04-membership-inference.md §9).", ""]
+    elif contract:
+        out += [f"Evaluation contract: **{contract}** — ordinary membership metrics use ACTUAL membership"
+                + (" (none of these candidates is a member, so positive-class metrics are undefined)."
+                   if contract == "placebo" else "."), ""]
     if m:
         out += ["### Victim utility", "", "| Metric | Value |", "|---|---|",
                 f"| train_accuracy | {_ratio(m.get('train_accuracy'))} |",
@@ -88,9 +97,22 @@ def render_membership_markdown(rec: MembershipRecord, verification: dict | None 
                         "tpr_at_low_fpr", "fpr_at_low_fpr", "undefended_membership_accuracy", "correctness_reduction"):
                 if f"threshold_{key}" in m:
                     out.append(f"| {key} | {_ratio(m.get(f'threshold_{key}'))} | {_ratio(m.get(f'shadow_{key}'))} |")
-            out.append("| leakage p (Mann–Whitney, one-sided) | " + " | ".join(
-                f"{m[f'{a}_leakage_p_value']['value']:.3g} → "
-                f"{'claimed' if m[f'{a}_leakage_p_value']['leakage_claimed'] else 'not claimed'}" for a in ATTACKS) + " |")
+            def _lp(a):
+                lp = m[f"{a}_leakage_p_value"]
+                if lp["value"] is None:
+                    return "undefined (no actual member / non-member to compare)"
+                return f"{lp['value']:.3g} → {'claimed' if lp['leakage_claimed'] else 'not claimed'}"
+            out.append("| leakage p (Mann–Whitney, one-sided) | " + " | ".join(_lp(a) for a in ATTACKS) + " |")
+            if "placebo_discrimination_claimed" in m:
+                pdc = m["placebo_discrimination_claimed"]
+                out += ["", "### Placebo analysis (population discrimination — NOT membership)", "",
+                        "No candidate is a training member of this victim. Group A is drawn from the pool the real victim "
+                        "was trained on, group B from the evaluation pool; the attack is expected NOT to separate them.", "",
+                        "| Metric | Threshold attack | Shadow-model attack |", "|---|---|---|"]
+                for key in ("placebo_auc", "placebo_advantage", "placebo_p_value"):
+                    out.append(f"| {key} | {_num(m.get(f'threshold_{key}'), 4)} | {_num(m.get(f'shadow_{key}'), 4)} |")
+                out.append(f"\nPlacebo discrimination {'CLAIMED' if pdc['value'] else 'not claimed'} "
+                           f"(alpha {pdc['alpha']} split over both attacks).")
             out += ["", "### Confusion matrices (balanced operating point)", "",
                     "| Attack | TP | FP | TN | FN |", "|---|---|---|---|---|"]
             out += [f"| {a} | {m[f'{a}_confusion']['tp']} | {m[f'{a}_confusion']['fp']} | {m[f'{a}_confusion']['tn']} "
@@ -121,12 +143,12 @@ def render_membership_markdown(rec: MembershipRecord, verification: dict | None 
             out += ["", f"Victim queries: {q.get('total')} of {q.get('budget')} (one per candidate; shadow and reference "
                         "models never query the victim)."]
             out += ["", "### Per-candidate results (first 25)", "",
-                    "| candidate | released | threshold score → member? | shadow score → member? | group (eval only) |",
+                    "| candidate | released | threshold score → member? | shadow score → member? | actual member (eval only) |",
                     "|---|---|---|---|---|"]
             for c in rec.candidates[:25]:
                 out.append(f"| {c.candidate_id} | {c.observation.released_output:.4g} | {c.threshold.score:.4g} → "
                            f"{c.threshold.member_balanced} | {c.shadow.score:.4g} → {c.shadow.member_balanced} | "
-                           f"{c.truth.group} |")
+                           f"{c.truth.in_training} |")
         notes = NOTES.get(rec.evaluation, [])
         if notes:
             out += ["", "### Notes", ""] + [f"- {n}" for n in notes]

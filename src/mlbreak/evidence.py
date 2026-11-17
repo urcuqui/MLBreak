@@ -12,7 +12,7 @@ from typing import Any
 import pandas as pd
 
 from .inversion.schemas import InversionRecord
-from .membership.schemas import MembershipRecord
+from .membership.schemas import MembershipRecord, MembershipRecordV2
 from .poisoning.schemas import PoisoningRecord
 from .text.schemas import TextEvasionRecord
 from .schemas import EXPERIMENT_ID_PATTERN, ExperimentRecord
@@ -29,7 +29,10 @@ def parse_record(data: dict[str, Any]) -> AnyRecord:
     if data.get("family") == "inversion" or str(data.get("schema_version", "")).startswith("mlbreak.inversion/"):
         return InversionRecord.model_validate(data)
     if data.get("family") == "membership" or str(data.get("schema_version", "")).startswith("mlbreak.membership/"):
-        return MembershipRecord.model_validate(data)
+        # each schema version is parsed by its own model, so v1 records keep their exact dumps and hashes
+        if data.get("schema_version") == "mlbreak.membership/v1":
+            return MembershipRecord.model_validate(data)
+        return MembershipRecordV2.model_validate(data)
     return ExperimentRecord.model_validate(data)
 
 _ID_RE = re.compile(EXPERIMENT_ID_PATTERN)
@@ -166,7 +169,8 @@ def membership_csv(rec: MembershipRecord) -> str:
     """One row per candidate: attacker-side columns (observation, scores, decisions), then evaluator-only truth."""
     rows = []
     for c in rec.candidates:
-        d: dict[str, Any] = {"candidate_id": c.candidate_id}
+        d: dict[str, Any] = {"candidate_id": c.candidate_id, "schema_version": rec.schema_version,
+                             "evaluation_contract": getattr(rec, "evaluation_contract", None)}
         if c.observation is not None:
             d.update({f"x_{j}": v for j, v in enumerate(c.observation.features)})
             d.update(label_given=c.observation.label, released_output=c.observation.released_output,
@@ -178,7 +182,8 @@ def membership_csv(rec: MembershipRecord) -> str:
                           f"{a}_member_low_fpr": dec.member_low_fpr})
             if c.undefended_correct is not None:
                 d[f"{a}_undefended_correct"] = c.undefended_correct.get(a)
-        d.update(eval_group=c.truth.group, eval_in_training=c.truth.in_training, eval_population=c.truth.population,
+        d.update(eval_in_training=c.truth.in_training, eval_designated_group=c.truth.group,
+                 eval_placebo_group=getattr(c.truth, "placebo_group", None), eval_population=c.truth.population,
                  eval_population_index=c.truth.population_index)
         rows.append(d)
     buf = io.StringIO()
@@ -310,6 +315,11 @@ def _summarize_membership(rec: dict[str, Any]) -> dict[str, Any]:
         "attack_success_rate": None, "attack_success": None,
         "membership_auc": v("threshold_roc_auc"), "shadow_membership_auc": v("shadow_roc_auc"),
         "membership_advantage": v("threshold_membership_advantage"), "generalization_gap": v("generalization_gap"),
+        # v2: explicit contract; the decoy's placebo AUC is NOT a membership AUC. v1 decoy rows are labelled as such.
+        "evaluation_contract": rec.get("evaluation_contract") or (
+            "v1-decoy (placebo semantics)" if rec["model"].get("training_population") not in (None, "victim_train")
+            else None),
+        "placebo_auc": v("threshold_placebo_auc"),
         "parent_experiment_id": rec.get("parent_experiment_id"), "replay_of": rec.get("replay_of"),
         "schema_version": rec.get("schema_version"), "error": rec.get("error"),
     }
